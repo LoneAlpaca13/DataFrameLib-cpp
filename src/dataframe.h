@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 class EagerDataFrame {
  private:
@@ -11,8 +12,11 @@ class EagerDataFrame {
  public:
   EagerDataFrame(std::shared_ptr<arrow::Table> t);
 
+  std::shared_ptr<arrow::Table> getTable() const;
+
   void printSchema() const;
   void printHead(int n = 5) const;
 
-  std::shared_ptr<arrow::Table> getTable() const;
+  EagerDataFrame select(const std::vector<std::string>& columns) const;
+  EagerDataFrame head(int n) const;
 };

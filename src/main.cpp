@@ -27,8 +27,17 @@ int main() {
 
   EagerDataFrame df(table);
 
+  std::cout << "=== Original ===\n";
   df.printSchema();
-  df.printHead(5);
+  df.printHead(6);
+
+  std::cout << "\n=== Select ===\n";
+  auto df2 = df.select({"name", "salary"});
+  df2.printHead(6);
+
+  std::cout << "\n=== Head ===\n";
+  auto df3 = df.head(3);
+  df3.printHead(3);
 
   return 0;
 }
