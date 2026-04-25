@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include "dataframe.h"
+#include "expr.h"
 
 std::shared_ptr<arrow::Table> readCSV(const std::string& filename) {
   auto input = arrow::io::ReadableFile::Open(filename).ValueOrDie();
@@ -27,17 +28,17 @@ int main() {
 
   EagerDataFrame df(table);
 
-  std::cout << "=== Original ===\n";
-  df.printSchema();
-  df.printHead(6);
+  auto expr = std::make_shared<GreaterExpr>(
+      std::make_shared<ColumnExpr>("age"),
+      std::make_shared<LiteralExpr>(std::make_shared<arrow::Int64Scalar>(30)));
 
-  std::cout << "\n=== Select ===\n";
-  auto df2 = df.select({"name", "salary"});
-  df2.printHead(6);
+  auto result = expr->evaluate(df.getTable());
 
-  std::cout << "\n=== Head ===\n";
-  auto df3 = df.head(3);
-  df3.printHead(3);
+  std::cout << "\n=== Expression Result (age > 30) ===\n";
+  for (auto& val : result) {
+    std::cout << val->ToString() << " ";
+  }
+  std::cout << "\n";
 
   return 0;
 }
