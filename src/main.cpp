@@ -25,16 +25,59 @@ std::shared_ptr<arrow::Table> readCSV(const std::string& filename) {
 
 int main() {
   auto table = readCSV("../data.csv");
-
   EagerDataFrame df(table);
 
-  auto new_df = df.with_column(
-      "salary_plus_1000", std::make_shared<AddExpr>(
-                              std::make_shared<ColumnExpr>("salary"),
-                              std::make_shared<LiteralExpr>(
-                                  std::make_shared<arrow::Int64Scalar>(1000))));
+  std::cout << "=== Original ===\n";
+  df.printHead(10);
 
-  std::cout << "\n=== with_column test ===\n";
-  new_df.printHead(10);
+  // 1️⃣ Arithmetic test
+  auto add_expr = std::make_shared<AddExpr>(
+      std::make_shared<ColumnExpr>("salary"),
+      std::make_shared<LiteralExpr>(
+          std::make_shared<arrow::Int64Scalar>(1000)));
+
+  auto df_add = df.with_column("salary_plus_1000", add_expr);
+
+  std::cout << "\n=== salary + 1000 ===\n";
+  df_add.printHead(10);
+
+  // 2️⃣ Comparison test
+  auto cmp_expr = std::make_shared<BinaryExpr>(
+      std::make_shared<ColumnExpr>("age"),
+      std::make_shared<LiteralExpr>(std::make_shared<arrow::Int64Scalar>(30)),
+      OpType::GT);
+
+  std::cout << "\n=== age > 30 (raw result) ===\n";
+  auto cmp_result = cmp_expr->evaluate(df.getTable());
+  for (auto& v : cmp_result) {
+    std::cout << v->ToString() << " ";
+  }
+  std::cout << "\n";
+
+  // 3️⃣ Filter test
+  auto df_filtered = df.filter(cmp_expr);
+
+  std::cout << "\n=== Filter age > 30 ===\n";
+  df_filtered.printHead(10);
+
+  // 4️⃣ Combined expression test
+  auto complex_expr = std::make_shared<BinaryExpr>(
+      std::make_shared<BinaryExpr>(
+          std::make_shared<ColumnExpr>("age"),
+          std::make_shared<LiteralExpr>(
+              std::make_shared<arrow::Int64Scalar>(30)),
+          OpType::GT),
+      std::make_shared<BinaryExpr>(
+          std::make_shared<ColumnExpr>("salary"),
+          std::make_shared<LiteralExpr>(
+              std::make_shared<arrow::Int64Scalar>(55000)),
+          OpType::GT),
+      OpType::AND);
+
+  auto df_complex = df.filter(complex_expr);
+
+  std::cout << "\n=== age > 30 AND salary > 55000 ===\n";
+  df_complex.printHead(10);
+
   return 0;
 }
