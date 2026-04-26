@@ -1,4 +1,16 @@
 #pragma once
+
 #include <arrow/api.h>
 
-std::shared_ptr<arrow::Table> readCSV(const std::string& filename);
+#include <memory>
+#include <string>
+#include <unordered_map>
+
+namespace dataframelib {
+
+class EagerDataFrame;
+class LazyDataFrame;
+
+void sink_csv(const LazyDataFrame& df, const std::string& path);
+void sink_parquet(const LazyDataFrame& df, const std::string& path);
+}  // namespace dataframelib

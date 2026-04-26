@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 #include <vector>
-
+namespace dataframelib {
 // ================= BASE =================
 class Expr {
  public:
@@ -37,7 +37,13 @@ class ColumnExpr : public Expr {
     result.reserve(chunk->length());
 
     for (int i = 0; i < chunk->length(); i++) {
-      result.push_back(chunk->GetScalar(i).ValueOrDie());
+      auto scalar = chunk->GetScalar(i).ValueOrDie();
+
+      if (!scalar->is_valid) {
+        result.push_back(scalar);  // keep null
+      } else {
+        result.push_back(scalar);
+      }
     }
 
     return result;
@@ -94,6 +100,15 @@ class BinaryExpr : public Expr {
 
     for (size_t i = 0; i < lvals.size(); i++) {
       // ===== INT =====
+      auto l = lvals[i];
+      auto r = rvals[i];
+
+      // NULL propagation
+      if (!l->is_valid || !r->is_valid) {
+        result.push_back(arrow::MakeNullScalar(arrow::boolean()));
+        continue;
+      }
+
       auto l_int = std::dynamic_pointer_cast<arrow::Int64Scalar>(lvals[i]);
       auto r_int = std::dynamic_pointer_cast<arrow::Int64Scalar>(rvals[i]);
 
@@ -158,3 +173,4 @@ class BinaryExpr : public Expr {
     return result;
   }
 };
+}  // namespace dataframelib

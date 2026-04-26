@@ -5,7 +5,7 @@
 
 #include "dataframe.h"
 #include "expr.h"
-
+namespace dataframelib {
 enum class LazyOpType {
   FILTER,
   SELECT,
@@ -45,3 +45,4 @@ class LazyDataFrame {
 
   EagerDataFrame collect() const;
 };
+}  // namespace dataframelib

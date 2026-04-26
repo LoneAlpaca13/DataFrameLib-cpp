@@ -8,16 +8,18 @@
 
 #include "expr.h"
 
+namespace dataframelib {
+
 class EagerDataFrame;
 
 class GroupedDataFrame {
  private:
   std::shared_ptr<arrow::Table> table;
-  std::map<int64_t, std::vector<int>> groups;
+  std::map<std::string, std::vector<int>> groups;
 
  public:
   GroupedDataFrame(std::shared_ptr<arrow::Table> t,
-                   std::map<int64_t, std::vector<int>> g)
+                   std::map<std::string, std::vector<int>> g)
       : table(t), groups(g) {}
 
   void printGroups() const;
@@ -48,8 +50,11 @@ class EagerDataFrame {
 
   EagerDataFrame sort(const std::string& column_name) const;
 
-  GroupedDataFrame group_by(const std::string& column_name) const;
+  GroupedDataFrame group_by(const std::vector<std::string>& column_names) const;
 
   EagerDataFrame join(const EagerDataFrame& other,
-                      const std::string& column_name) const;
+                      const std::vector<std::string>& column_names,
+                      const std::string& how) const;
 };
+
+}  // namespace dataframelib

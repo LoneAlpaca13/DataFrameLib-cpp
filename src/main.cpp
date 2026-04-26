@@ -1,20 +1,12 @@
 #include <iostream>
 
-#include "expr.h"
-#include "lazy.h"
-
+#include "dataframelib/dataframelib.h"
+using namespace dataframelib;
 int main() {
-  LazyDataFrame df("../data.csv");
+  auto df = dataframelib::read_csv("../data.csv");
 
-  auto result = df.select({"name", "salary"})
-                    .filter(std::make_shared<BinaryExpr>(
-                        std::make_shared<ColumnExpr>("age"),
-                        std::make_shared<LiteralExpr>(
-                            std::make_shared<arrow::Int64Scalar>(30)),
-                        OpType::GT))
-                    .collect();
-
-  result.printHead(10);
+  df.printSchema();
+  df.printHead();
 
   return 0;
 }

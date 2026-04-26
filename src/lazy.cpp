@@ -1,7 +1,8 @@
 #include "lazy.h"
 
+#include "dataframelib/dataframelib.h"
 #include "utils.h"
-
+namespace dataframelib {
 std::string getFilterColumn(const std::shared_ptr<Expr>& expr) {
   auto col = std::dynamic_pointer_cast<ColumnExpr>(expr);
   if (col) return col->getName();
@@ -134,9 +135,7 @@ LazyDataFrame LazyDataFrame::sort(const std::vector<std::string>& cols,
 }
 
 EagerDataFrame LazyDataFrame::collect() const {
-  auto table = readCSV(csv_path);
-  EagerDataFrame df(table);
-
+  auto df = dataframelib::read_csv(csv_path);
   std::vector<std::string> group_keys;
   bool has_group = false;
 
@@ -170,7 +169,7 @@ EagerDataFrame LazyDataFrame::collect() const {
         throw std::runtime_error("aggregate() called without group_by()");
       }
 
-      auto grouped = df.group_by(group_keys[0]);
+      auto grouped = df.group_by(group_keys);
 
       // for now: only one aggregation
       auto pair = op.agg_map[0];
@@ -183,3 +182,4 @@ EagerDataFrame LazyDataFrame::collect() const {
 
   return df;
 }
+}  // namespace dataframelib
