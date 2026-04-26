@@ -225,7 +225,7 @@ GroupedDataFrame EagerDataFrame::group_by(
   auto column = table->column(col_idx);
   auto chunk = column->chunk(0);
 
-  std::unordered_map<int64_t, std::vector<int>> groups;
+  std::map<int64_t, std::vector<int>> groups;
 
   for (int i = 0; i < chunk->length(); i++) {
     auto scalar = std::dynamic_pointer_cast<arrow::Int64Scalar>(
@@ -246,4 +246,71 @@ void GroupedDataFrame::printGroups() const {
     }
     std::cout << "\n";
   }
+}
+
+EagerDataFrame GroupedDataFrame::aggregate(const std::string& column_name,
+                                           const std::string& op) const {
+  int col_idx = table->schema()->GetFieldIndex(column_name);
+  if (col_idx == -1) {
+    throw std::runtime_error("Column not found");
+  }
+
+  auto column = table->column(col_idx);
+  auto chunk = column->chunk(0);
+
+  arrow::Int64Builder key_builder;
+  arrow::Int64Builder value_builder;
+
+  for (const auto& pair : groups) {
+    int64_t key = pair.first;
+    const auto& indices = pair.second;
+
+    int64_t result = 0;
+
+    if (op == "sum") {
+      for (int idx : indices) {
+        auto scalar = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+            chunk->GetScalar(idx).ValueOrDie());
+        result += scalar->value;
+      }
+    }
+
+    else if (op == "count") {
+      result = indices.size();
+    }
+
+    else if (op == "mean") {
+      int64_t sum = 0;
+      for (int idx : indices) {
+        auto scalar = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+            chunk->GetScalar(idx).ValueOrDie());
+        sum += scalar->value;
+      }
+      result = sum / indices.size();
+    }
+
+    else {
+      throw std::runtime_error("Unsupported aggregation");
+    }
+
+    key_builder.Append(key);
+    value_builder.Append(result);
+  }
+
+  std::shared_ptr<arrow::Array> key_array;
+  std::shared_ptr<arrow::Array> value_array;
+
+  key_builder.Finish(&key_array);
+  value_builder.Finish(&value_array);
+
+  auto key_chunked = std::make_shared<arrow::ChunkedArray>(key_array);
+  auto value_chunked = std::make_shared<arrow::ChunkedArray>(value_array);
+
+  auto schema =
+      arrow::schema({arrow::field("group_key", arrow::int64()),
+                     arrow::field(column_name + "_" + op, arrow::int64())});
+
+  auto new_table = arrow::Table::Make(schema, {key_chunked, value_chunked});
+
+  return EagerDataFrame(new_table);
 }

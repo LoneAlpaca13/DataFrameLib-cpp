@@ -87,5 +87,10 @@ int main() {
   std::cout << "\n=== Groups by age ===\n";
   grouped.printGroups();
 
+  auto result = grouped.aggregate("salary", "sum");
+
+  std::cout << "\n=== Aggregation: sum salary by age ===\n";
+  result.printHead(10);
+
   return 0;
 }

@@ -1,24 +1,29 @@
 #pragma once
 #include <arrow/api.h>
 
+#include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "expr.h"
 
+class EagerDataFrame;
+
 class GroupedDataFrame {
  private:
   std::shared_ptr<arrow::Table> table;
-  std::unordered_map<int64_t, std::vector<int>> groups;
+  std::map<int64_t, std::vector<int>> groups;
 
  public:
   GroupedDataFrame(std::shared_ptr<arrow::Table> t,
-                   std::unordered_map<int64_t, std::vector<int>> g)
+                   std::map<int64_t, std::vector<int>> g)
       : table(t), groups(g) {}
 
   void printGroups() const;
+
+  EagerDataFrame aggregate(const std::string& column_name,
+                           const std::string& op) const;
 };
 
 class EagerDataFrame {
