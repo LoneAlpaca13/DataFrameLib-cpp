@@ -148,3 +148,69 @@ EagerDataFrame EagerDataFrame::with_column(const std::string& name,
 
   return EagerDataFrame(new_table);
 }
+
+EagerDataFrame EagerDataFrame::sort(const std::string& column_name) const {
+  int col_idx = table->schema()->GetFieldIndex(column_name);
+  if (col_idx == -1) {
+    throw std::runtime_error("Column not found: " + column_name);
+  }
+
+  auto column = table->column(col_idx);
+  auto chunk = column->chunk(0);
+
+  int rows = chunk->length();
+
+  // Step 1: create indices
+  std::vector<int> indices(rows);
+  for (int i = 0; i < rows; i++) {
+    indices[i] = i;
+  }
+
+  // Step 2: sort indices based on column values
+  std::sort(indices.begin(), indices.end(), [&](int a, int b) {
+    auto va = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+        chunk->GetScalar(a).ValueOrDie());
+    auto vb = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+        chunk->GetScalar(b).ValueOrDie());
+    return va->value < vb->value;
+  });
+
+  // Step 3: rebuild all columns using sorted indices
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> new_columns;
+
+  for (int j = 0; j < table->num_columns(); j++) {
+    auto col = table->column(j);
+    auto ch = col->chunk(0);
+
+    arrow::Int64Builder int_builder;
+    arrow::StringBuilder str_builder;
+
+    bool is_int = (ch->type()->id() == arrow::Type::INT64);
+
+    for (int idx : indices) {
+      auto scalar = ch->GetScalar(idx).ValueOrDie();
+
+      if (is_int) {
+        auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(scalar);
+        int_builder.Append(val->value);
+      } else {
+        auto val = std::dynamic_pointer_cast<arrow::StringScalar>(scalar);
+        str_builder.Append(val->ToString());
+      }
+    }
+
+    std::shared_ptr<arrow::Array> arr;
+
+    if (is_int) {
+      int_builder.Finish(&arr);
+    } else {
+      str_builder.Finish(&arr);
+    }
+
+    new_columns.push_back(std::make_shared<arrow::ChunkedArray>(arr));
+  }
+
+  auto new_table = arrow::Table::Make(table->schema(), new_columns);
+
+  return EagerDataFrame(new_table);
+}

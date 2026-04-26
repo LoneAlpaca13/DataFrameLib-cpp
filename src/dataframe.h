@@ -26,4 +26,6 @@ class EagerDataFrame {
 
   EagerDataFrame with_column(const std::string& name,
                              std::shared_ptr<Expr> expr) const;
+
+  EagerDataFrame sort(const std::string& column_name) const;
 };

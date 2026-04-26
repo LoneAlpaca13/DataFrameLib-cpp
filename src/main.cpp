@@ -77,5 +77,10 @@ int main() {
   std::cout << "\n=== Head (3 rows) ===\n";
   df_head.printHead(3);
 
+  auto df_sorted = df.sort("age");
+
+  std::cout << "\n=== Sorted by age ===\n";
+  df_sorted.printHead(10);
+
   return 0;
 }
