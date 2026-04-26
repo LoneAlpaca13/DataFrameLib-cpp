@@ -109,3 +109,42 @@ EagerDataFrame EagerDataFrame::filter(std::shared_ptr<Expr> predicate) const {
   auto new_table = arrow::Table::Make(table->schema(), new_arrays);
   return EagerDataFrame(new_table);
 }
+
+EagerDataFrame EagerDataFrame::with_column(const std::string& name,
+                                           std::shared_ptr<Expr> expr) const {
+  auto values = expr->evaluate(table);
+
+  arrow::Int64Builder builder;
+
+  for (auto& v : values) {
+    auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(v);
+    builder.Append(val->value);
+  }
+
+  std::shared_ptr<arrow::Array> new_array;
+  builder.Finish(&new_array);
+
+  auto chunked_array = std::make_shared<arrow::ChunkedArray>(new_array);
+
+  int idx = table->schema()->GetFieldIndex(name);
+
+  std::shared_ptr<arrow::Table> new_table;
+
+  if (idx == -1) {
+    new_table =
+        table
+            ->AddColumn(table->num_columns(),
+                        std::make_shared<arrow::Field>(name, arrow::int64()),
+                        chunked_array)
+            .ValueOrDie();
+  } else {
+    new_table =
+        table
+            ->AddColumn(table->num_columns(),
+                        std::make_shared<arrow::Field>(name, arrow::int64()),
+                        chunked_array)
+            .ValueOrDie();
+  }
+
+  return EagerDataFrame(new_table);
+}

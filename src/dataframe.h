@@ -23,4 +23,7 @@ class EagerDataFrame {
   EagerDataFrame head(int n) const;
 
   EagerDataFrame filter(std::shared_ptr<Expr> predicate) const;
+
+  EagerDataFrame with_column(const std::string& name,
+                             std::shared_ptr<Expr> expr) const;
 };

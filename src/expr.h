@@ -87,3 +87,31 @@ class GreaterExpr : public Expr {
     return result;
   }
 };
+
+class AddExpr : public Expr {
+ private:
+  std::shared_ptr<Expr> left;
+  std::shared_ptr<Expr> right;
+
+ public:
+  AddExpr(std::shared_ptr<Expr> l, std::shared_ptr<Expr> r)
+      : left(l), right(r) {}
+
+  std::vector<std::shared_ptr<arrow::Scalar>> evaluate(
+      const std::shared_ptr<arrow::Table>& table) const override {
+    auto lvals = left->evaluate(table);
+    auto rvals = right->evaluate(table);
+
+    std::vector<std::shared_ptr<arrow::Scalar>> result;
+
+    for (size_t i = 0; i < lvals.size(); i++) {
+      auto l = std::dynamic_pointer_cast<arrow::Int64Scalar>(lvals[i]);
+      auto r = std::dynamic_pointer_cast<arrow::Int64Scalar>(rvals[i]);
+
+      int64_t val = l->value + r->value;
+      result.push_back(std::make_shared<arrow::Int64Scalar>(val));
+    }
+
+    return result;
+  }
+};
