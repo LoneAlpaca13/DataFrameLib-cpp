@@ -92,5 +92,12 @@ int main() {
   std::cout << "\n=== Aggregation: sum salary by age ===\n";
   result.printHead(10);
 
+  auto df2 = EagerDataFrame(readCSV("../salary.csv"));
+
+  auto joined = df.join(df2, "id");
+
+  std::cout << "\n=== Join Result ===\n";
+  joined.printHead(10);
+
   return 0;
 }

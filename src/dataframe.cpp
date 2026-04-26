@@ -314,3 +314,125 @@ EagerDataFrame GroupedDataFrame::aggregate(const std::string& column_name,
 
   return EagerDataFrame(new_table);
 }
+
+EagerDataFrame EagerDataFrame::join(const EagerDataFrame& other,
+                                    const std::string& column_name) const {
+  auto left_table = table;
+  auto right_table = other.getTable();
+
+  int left_idx = left_table->schema()->GetFieldIndex(column_name);
+  int right_idx = right_table->schema()->GetFieldIndex(column_name);
+
+  if (left_idx == -1 || right_idx == -1) {
+    throw std::runtime_error("Join column not found");
+  }
+
+  auto left_col = left_table->column(left_idx)->chunk(0);
+  auto right_col = right_table->column(right_idx)->chunk(0);
+
+  // Step 1: build hashmap for right table
+  std::unordered_map<int64_t, int> hash_map;
+
+  for (int i = 0; i < right_col->length(); i++) {
+    auto scalar = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+        right_col->GetScalar(i).ValueOrDie());
+    hash_map[scalar->value] = i;
+  }
+
+  // Builders for result
+  std::vector<arrow::Int64Builder> int_builders(left_table->num_columns() +
+                                                right_table->num_columns() - 1);
+  std::vector<arrow::StringBuilder> str_builders(
+      left_table->num_columns() + right_table->num_columns() - 1);
+
+  std::vector<bool> is_int;
+
+  // Determine column types
+  for (int j = 0; j < left_table->num_columns(); j++) {
+    is_int.push_back(left_table->column(j)->type()->id() == arrow::Type::INT64);
+  }
+
+  for (int j = 0; j < right_table->num_columns(); j++) {
+    if (j == right_idx) continue;  // skip duplicate join column
+    is_int.push_back(right_table->column(j)->type()->id() ==
+                     arrow::Type::INT64);
+  }
+
+  // Step 2: iterate left table
+  for (int i = 0; i < left_col->length(); i++) {
+    auto left_scalar = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+        left_col->GetScalar(i).ValueOrDie());
+
+    int64_t key = left_scalar->value;
+
+    if (hash_map.find(key) == hash_map.end()) continue;
+
+    int right_i = hash_map[key];
+
+    int col_pos = 0;
+
+    // left columns
+    for (int j = 0; j < left_table->num_columns(); j++) {
+      auto scalar = left_table->column(j)->chunk(0)->GetScalar(i).ValueOrDie();
+
+      if (is_int[col_pos]) {
+        auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(scalar);
+        int_builders[col_pos].Append(val->value);
+      } else {
+        auto val = std::dynamic_pointer_cast<arrow::StringScalar>(scalar);
+        str_builders[col_pos].Append(val->ToString());
+      }
+      col_pos++;
+    }
+
+    // right columns (skip join key)
+    for (int j = 0; j < right_table->num_columns(); j++) {
+      if (j == right_idx) continue;
+
+      auto scalar =
+          right_table->column(j)->chunk(0)->GetScalar(right_i).ValueOrDie();
+
+      if (is_int[col_pos]) {
+        auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(scalar);
+        int_builders[col_pos].Append(val->value);
+      } else {
+        auto val = std::dynamic_pointer_cast<arrow::StringScalar>(scalar);
+        str_builders[col_pos].Append(val->ToString());
+      }
+      col_pos++;
+    }
+  }
+
+  // Step 3: build arrays
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> columns;
+
+  for (size_t i = 0; i < is_int.size(); i++) {
+    std::shared_ptr<arrow::Array> arr;
+
+    if (is_int[i]) {
+      int_builders[i].Finish(&arr);
+    } else {
+      str_builders[i].Finish(&arr);
+    }
+
+    columns.push_back(std::make_shared<arrow::ChunkedArray>(arr));
+  }
+
+  // schema
+  std::vector<std::shared_ptr<arrow::Field>> fields;
+
+  for (int j = 0; j < left_table->num_columns(); j++) {
+    fields.push_back(left_table->field(j));
+  }
+
+  for (int j = 0; j < right_table->num_columns(); j++) {
+    if (j == right_idx) continue;
+    fields.push_back(right_table->field(j));
+  }
+
+  auto schema = std::make_shared<arrow::Schema>(fields);
+
+  auto new_table = arrow::Table::Make(schema, columns);
+
+  return EagerDataFrame(new_table);
+}

@@ -49,4 +49,7 @@ class EagerDataFrame {
   EagerDataFrame sort(const std::string& column_name) const;
 
   GroupedDataFrame group_by(const std::string& column_name) const;
+
+  EagerDataFrame join(const EagerDataFrame& other,
+                      const std::string& column_name) const;
 };
