@@ -2,6 +2,62 @@
 
 #include "utils.h"
 
+std::string getFilterColumn(const std::shared_ptr<Expr>& expr) {
+  auto col = std::dynamic_pointer_cast<ColumnExpr>(expr);
+  if (col) return col->getName();
+
+  auto bin = std::dynamic_pointer_cast<BinaryExpr>(expr);
+  if (bin) {
+    auto left = std::dynamic_pointer_cast<ColumnExpr>(bin->getLeft());
+    if (left) return left->getName();
+  }
+
+  return "";
+}
+
+std::vector<Operation> optimize(const std::vector<Operation>& ops) {
+  std::vector<Operation> result;
+
+  for (size_t i = 0; i < ops.size(); i++) {
+    const auto& op = ops[i];
+
+    if (op.type == LazyOpType::FILTER) {
+      std::string filter_col = getFilterColumn(op.expr);
+
+      size_t j = result.size();
+
+      while (j > 0) {
+        const auto& prev = result[j - 1];
+
+        bool can_swap = true;
+
+        if (prev.type == LazyOpType::WITH_COLUMN) {
+          if (prev.column_name == filter_col) {
+            can_swap = false;
+          }
+        }
+
+        if (prev.type == LazyOpType::GROUP_BY ||
+            prev.type == LazyOpType::AGGREGATE) {
+          can_swap = false;
+        }
+
+        if (!can_swap) break;
+
+        j--;
+      }
+
+      result.insert(result.begin() + j, op);
+    }
+
+    else {
+      result.push_back(op);
+    }
+  }
+
+  return result;
+}
+
 LazyDataFrame::LazyDataFrame(const std::string& path) : csv_path(path) {}
 
 LazyDataFrame LazyDataFrame::filter(std::shared_ptr<Expr> expr) const {
@@ -81,12 +137,12 @@ EagerDataFrame LazyDataFrame::collect() const {
   auto table = readCSV(csv_path);
   EagerDataFrame df(table);
 
-  // temp storage for group_by
   std::vector<std::string> group_keys;
   bool has_group = false;
 
-  // Step 2: apply operations
-  for (const auto& op : ops) {
+  auto optimized_ops = optimize(ops);
+
+  for (const auto& op : optimized_ops) {
     if (op.type == LazyOpType::FILTER) {
       df = df.filter(op.expr);
     }

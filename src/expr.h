@@ -14,13 +14,14 @@ class Expr {
       const std::shared_ptr<arrow::Table>& table) const = 0;
 };
 
-// ================= COLUMN =================
 class ColumnExpr : public Expr {
  private:
   std::string name;
 
  public:
   ColumnExpr(const std::string& col) : name(col) {}
+
+  const std::string& getName() const { return name; }
 
   std::vector<std::shared_ptr<arrow::Scalar>> evaluate(
       const std::shared_ptr<arrow::Table>& table) const override {
@@ -69,7 +70,6 @@ class LiteralExpr : public Expr {
 // ================= OP ENUM =================
 enum class OpType { ADD, GT, LT, GE, LE, EQ, NEQ, AND, OR };
 
-// ================= BINARY =================
 class BinaryExpr : public Expr {
  private:
   std::shared_ptr<Expr> left;
@@ -79,6 +79,10 @@ class BinaryExpr : public Expr {
  public:
   BinaryExpr(std::shared_ptr<Expr> l, std::shared_ptr<Expr> r, OpType o)
       : left(l), right(r), op(o) {}
+
+  const std::shared_ptr<Expr>& getLeft() const { return left; }
+
+  const std::shared_ptr<Expr>& getRight() const { return right; }
 
   std::vector<std::shared_ptr<arrow::Scalar>> evaluate(
       const std::shared_ptr<arrow::Table>& table) const override {
