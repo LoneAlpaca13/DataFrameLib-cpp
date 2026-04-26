@@ -140,7 +140,7 @@ EagerDataFrame EagerDataFrame::with_column(const std::string& name,
   } else {
     new_table =
         table
-            ->AddColumn(table->num_columns(),
+            ->SetColumn(idx,
                         std::make_shared<arrow::Field>(name, arrow::int64()),
                         chunked_array)
             .ValueOrDie();
@@ -213,4 +213,37 @@ EagerDataFrame EagerDataFrame::sort(const std::string& column_name) const {
   auto new_table = arrow::Table::Make(table->schema(), new_columns);
 
   return EagerDataFrame(new_table);
+}
+
+GroupedDataFrame EagerDataFrame::group_by(
+    const std::string& column_name) const {
+  int col_idx = table->schema()->GetFieldIndex(column_name);
+  if (col_idx == -1) {
+    throw std::runtime_error("Column not found");
+  }
+
+  auto column = table->column(col_idx);
+  auto chunk = column->chunk(0);
+
+  std::unordered_map<int64_t, std::vector<int>> groups;
+
+  for (int i = 0; i < chunk->length(); i++) {
+    auto scalar = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+        chunk->GetScalar(i).ValueOrDie());
+
+    int64_t key = scalar->value;
+    groups[key].push_back(i);
+  }
+
+  return GroupedDataFrame(table, groups);
+}
+
+void GroupedDataFrame::printGroups() const {
+  for (const auto& [key, indices] : groups) {
+    std::cout << key << " : ";
+    for (int idx : indices) {
+      std::cout << idx << " ";
+    }
+    std::cout << "\n";
+  }
 }

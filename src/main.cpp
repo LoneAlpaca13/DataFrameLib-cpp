@@ -82,5 +82,10 @@ int main() {
   std::cout << "\n=== Sorted by age ===\n";
   df_sorted.printHead(10);
 
+  auto grouped = df.group_by("age");
+
+  std::cout << "\n=== Groups by age ===\n";
+  grouped.printGroups();
+
   return 0;
 }

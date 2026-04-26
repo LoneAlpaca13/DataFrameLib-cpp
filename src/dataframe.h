@@ -3,9 +3,23 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "expr.h"
+
+class GroupedDataFrame {
+ private:
+  std::shared_ptr<arrow::Table> table;
+  std::unordered_map<int64_t, std::vector<int>> groups;
+
+ public:
+  GroupedDataFrame(std::shared_ptr<arrow::Table> t,
+                   std::unordered_map<int64_t, std::vector<int>> g)
+      : table(t), groups(g) {}
+
+  void printGroups() const;
+};
 
 class EagerDataFrame {
  private:
@@ -28,4 +42,6 @@ class EagerDataFrame {
                              std::shared_ptr<Expr> expr) const;
 
   EagerDataFrame sort(const std::string& column_name) const;
+
+  GroupedDataFrame group_by(const std::string& column_name) const;
 };
