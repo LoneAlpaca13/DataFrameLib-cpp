@@ -28,17 +28,13 @@ int main() {
 
   EagerDataFrame df(table);
 
-  auto expr = std::make_shared<GreaterExpr>(
+  auto filter_expr = std::make_shared<GreaterExpr>(
       std::make_shared<ColumnExpr>("age"),
       std::make_shared<LiteralExpr>(std::make_shared<arrow::Int64Scalar>(30)));
 
-  auto result = expr->evaluate(df.getTable());
-
-  std::cout << "\n=== Expression Result (age > 30) ===\n";
-  for (auto& val : result) {
-    std::cout << val->ToString() << " ";
-  }
-  std::cout << "\n";
+  std::cout << "\n=== Filter age > 30 ===\n";
+  auto df_filtered = df.filter(filter_expr);
+  df_filtered.printHead(10);
 
   return 0;
 }
