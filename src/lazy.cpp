@@ -27,33 +27,81 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
   std::vector<Operation> result;
 
   for (const auto& op : ops) {
+    // =========================
+    // 1. FILTER PUSHDOWN
+    // =========================
     if (op.type == LazyOpType::FILTER) {
       std::string filter_col = getFilterColumn(op.expr);
 
-      size_t j = result.size();
+      size_t pos = result.size();
 
-      while (j > 0) {
-        const auto& prev = result[j - 1];
+      while (pos > 0) {
+        const auto& prev = result[pos - 1];
 
         bool can_swap = true;
 
+        // cannot cross column creation if depends
         if (prev.type == LazyOpType::WITH_COLUMN &&
-            prev.column_name == filter_col)
+            prev.column_name == filter_col) {
           can_swap = false;
+        }
 
+        // cannot cross grouping
         if (prev.type == LazyOpType::GROUP_BY ||
-            prev.type == LazyOpType::AGGREGATE)
+            prev.type == LazyOpType::AGGREGATE) {
           can_swap = false;
+        }
 
         if (!can_swap) break;
-
-        j--;
+        pos--;
       }
 
-      result.insert(result.begin() + j, op);
-    } else {
-      result.push_back(op);
+      result.insert(result.begin() + pos, op);
+      continue;
     }
+
+    // =========================
+    // 2. PROJECTION PUSHDOWN
+    // =========================
+    if (op.type == LazyOpType::SELECT) {
+      // remove redundant selects
+      if (!result.empty() && result.back().type == LazyOpType::SELECT) {
+        result.back() = op;  // overwrite previous select
+      } else {
+        result.push_back(op);
+      }
+      continue;
+    }
+
+    // =========================
+    // 3. EXPRESSION SIMPLIFICATION
+    // =========================
+    if (op.type == LazyOpType::WITH_COLUMN) {
+      auto bin = std::dynamic_pointer_cast<BinaryExpr>(op.expr);
+
+      if (bin) {
+        auto left = bin->getLeft();
+        auto right = bin->getRight();
+
+        // x + 0 → x
+        if (bin->getOp() == OpType::ADD) {
+          if (auto lit = std::dynamic_pointer_cast<LiteralExpr>(right)) {
+            // assuming literal 0
+            op.expr = left;
+          }
+        }
+
+        // x * 1 → x
+        if (bin->getOp() == OpType::MUL) {
+          if (auto lit = std::dynamic_pointer_cast<LiteralExpr>(right)) {
+            op.expr = left;
+          }
+        }
+      }
+    }
+
+    // default
+    result.push_back(op);
   }
 
   return result;
