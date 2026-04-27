@@ -28,7 +28,6 @@ void EagerDataFrame::printHead(int n) const {
 
   for (int j = 0; j < table->num_columns(); j++)
     std::cout << table->field(j)->name() << "\t";
-
   std::cout << "\n";
 
   for (int i = 0; i < rows; i++) {
@@ -39,30 +38,70 @@ void EagerDataFrame::printHead(int n) const {
     std::cout << "\n";
   }
 }
-
-// ================= SELECT =================
+EagerDataFrame EagerDataFrame::head(int n) const {
+  return EagerDataFrame(table->Slice(0, n));
+}
+// ================= SELECT (EXPR BASED) =================
 
 EagerDataFrame EagerDataFrame::select(
-    const std::vector<std::string>& columns) const {
+    const std::vector<std::shared_ptr<Expr>>& exprs) const {
   std::vector<std::shared_ptr<arrow::Field>> fields;
   std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
 
-  for (auto& name : columns) {
-    int idx = table->schema()->GetFieldIndex(name);
-    if (idx == -1) throw std::runtime_error("Column not found");
+  for (size_t i = 0; i < exprs.size(); i++) {
+    auto values = exprs[i]->evaluate(table);
 
-    fields.push_back(table->field(idx));
-    arrays.push_back(table->column(idx));
+    auto first = values[0];
+
+    std::shared_ptr<arrow::Array> arr;
+
+    // ===== INT =====
+    if (std::dynamic_pointer_cast<arrow::Int64Scalar>(first)) {
+      arrow::Int64Builder builder;
+      for (auto& v : values) {
+        if (!v->is_valid)
+          builder.AppendNull();
+        else
+          builder.Append(
+              std::dynamic_pointer_cast<arrow::Int64Scalar>(v)->value);
+      }
+      builder.Finish(&arr);
+      fields.push_back(arrow::field("col" + std::to_string(i), arrow::int64()));
+    }
+
+    // ===== BOOL =====
+    else if (std::dynamic_pointer_cast<arrow::BooleanScalar>(first)) {
+      arrow::BooleanBuilder builder;
+      for (auto& v : values) {
+        if (!v->is_valid)
+          builder.AppendNull();
+        else
+          builder.Append(
+              std::dynamic_pointer_cast<arrow::BooleanScalar>(v)->value);
+      }
+      builder.Finish(&arr);
+      fields.push_back(
+          arrow::field("col" + std::to_string(i), arrow::boolean()));
+    }
+
+    // ===== STRING =====
+    else {
+      arrow::StringBuilder builder;
+      for (auto& v : values) {
+        if (!v->is_valid)
+          builder.AppendNull();
+        else
+          builder.Append(v->ToString());
+      }
+      builder.Finish(&arr);
+      fields.push_back(arrow::field("col" + std::to_string(i), arrow::utf8()));
+    }
+
+    arrays.push_back(std::make_shared<arrow::ChunkedArray>(arr));
   }
 
   return EagerDataFrame(
       arrow::Table::Make(std::make_shared<arrow::Schema>(fields), arrays));
-}
-
-// ================= HEAD =================
-
-EagerDataFrame EagerDataFrame::head(int n) const {
-  return EagerDataFrame(table->Slice(0, n));
 }
 
 // ================= FILTER =================
@@ -70,31 +109,62 @@ EagerDataFrame EagerDataFrame::head(int n) const {
 EagerDataFrame EagerDataFrame::filter(std::shared_ptr<Expr> predicate) const {
   auto mask = predicate->evaluate(table);
 
-  std::vector<std::shared_ptr<arrow::Array>> new_arrays;
+  std::vector<int> selected;
 
-  for (int j = 0; j < table->num_columns(); j++) {
-    auto chunk = table->column(j)->chunk(0);
-
-    arrow::StringBuilder builder;
-
-    for (int i = 0; i < chunk->length(); i++) {
-      auto keep = std::dynamic_pointer_cast<arrow::BooleanScalar>(mask[i]);
-
-      if (!keep || !keep->is_valid || !keep->value) continue;
-
-      auto val = chunk->GetScalar(i).ValueOrDie();
-      if (!val->is_valid)
-        builder.AppendNull();
-      else
-        builder.Append(val->ToString());
-    }
-
-    std::shared_ptr<arrow::Array> arr;
-    builder.Finish(&arr);
-    new_arrays.push_back(arr);
+  for (int i = 0; i < (int)mask.size(); i++) {
+    auto keep = std::dynamic_pointer_cast<arrow::BooleanScalar>(mask[i]);
+    if (keep && keep->is_valid && keep->value) selected.push_back(i);
   }
 
-  return EagerDataFrame(arrow::Table::Make(table->schema(), new_arrays));
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> new_cols;
+
+  for (int j = 0; j < table->num_columns(); j++) {
+    auto col = table->column(j)->chunk(0);
+
+    std::shared_ptr<arrow::Array> arr;
+
+    if (col->type_id() == arrow::Type::INT64) {
+      arrow::Int64Builder builder;
+      for (int i : selected) {
+        auto v = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+            col->GetScalar(i).ValueOrDie());
+        if (!v->is_valid)
+          builder.AppendNull();
+        else
+          builder.Append(v->value);
+      }
+      builder.Finish(&arr);
+    }
+
+    else if (col->type_id() == arrow::Type::BOOL) {
+      arrow::BooleanBuilder builder;
+      for (int i : selected) {
+        auto v = std::dynamic_pointer_cast<arrow::BooleanScalar>(
+            col->GetScalar(i).ValueOrDie());
+        if (!v->is_valid)
+          builder.AppendNull();
+        else
+          builder.Append(v->value);
+      }
+      builder.Finish(&arr);
+    }
+
+    else {
+      arrow::StringBuilder builder;
+      for (int i : selected) {
+        auto v = col->GetScalar(i).ValueOrDie();
+        if (!v->is_valid)
+          builder.AppendNull();
+        else
+          builder.Append(v->ToString());
+      }
+      builder.Finish(&arr);
+    }
+
+    new_cols.push_back(std::make_shared<arrow::ChunkedArray>(arr));
+  }
+
+  return EagerDataFrame(arrow::Table::Make(table->schema(), new_cols));
 }
 
 // ================= WITH COLUMN =================
@@ -102,76 +172,101 @@ EagerDataFrame EagerDataFrame::filter(std::shared_ptr<Expr> predicate) const {
 EagerDataFrame EagerDataFrame::with_column(const std::string& name,
                                            std::shared_ptr<Expr> expr) const {
   auto values = expr->evaluate(table);
-
-  if (values.empty()) throw std::runtime_error("Empty expression result");
-
-  arrow::StringBuilder builder;
-
-  for (auto& v : values) {
-    if (!v->is_valid)
-      builder.AppendNull();
-    else
-      builder.Append(v->ToString());
-  }
+  auto first = values[0];
 
   std::shared_ptr<arrow::Array> arr;
-  builder.Finish(&arr);
+
+  if (std::dynamic_pointer_cast<arrow::Int64Scalar>(first)) {
+    arrow::Int64Builder builder;
+    for (auto& v : values) {
+      if (!v->is_valid)
+        builder.AppendNull();
+      else
+        builder.Append(std::dynamic_pointer_cast<arrow::Int64Scalar>(v)->value);
+    }
+    builder.Finish(&arr);
+  }
+
+  else if (std::dynamic_pointer_cast<arrow::BooleanScalar>(first)) {
+    arrow::BooleanBuilder builder;
+    for (auto& v : values) {
+      if (!v->is_valid)
+        builder.AppendNull();
+      else
+        builder.Append(
+            std::dynamic_pointer_cast<arrow::BooleanScalar>(v)->value);
+    }
+    builder.Finish(&arr);
+  }
+
+  else {
+    arrow::StringBuilder builder;
+    for (auto& v : values) {
+      if (!v->is_valid)
+        builder.AppendNull();
+      else
+        builder.Append(v->ToString());
+    }
+    builder.Finish(&arr);
+  }
 
   auto chunked = std::make_shared<arrow::ChunkedArray>(arr);
 
   int idx = table->schema()->GetFieldIndex(name);
 
-  std::shared_ptr<arrow::Table> new_table;
-
   if (idx == -1) {
-    new_table = table
-                    ->AddColumn(table->num_columns(),
-                                arrow::field(name, arrow::utf8()), chunked)
-                    .ValueOrDie();
-  } else {
-    new_table =
-        table->SetColumn(idx, arrow::field(name, arrow::utf8()), chunked)
-            .ValueOrDie();
+    return EagerDataFrame(table
+                              ->AddColumn(table->num_columns(),
+                                          arrow::field(name, arr->type()),
+                                          chunked)
+                              .ValueOrDie());
   }
 
-  return EagerDataFrame(new_table);
+  return EagerDataFrame(
+      table->SetColumn(idx, arrow::field(name, arr->type()), chunked)
+          .ValueOrDie());
 }
 
 // ================= SORT =================
 
-EagerDataFrame EagerDataFrame::sort(const std::string& column_name) const {
+EagerDataFrame EagerDataFrame::sort(const std::string& column_name,
+                                    bool asc) const {
   int idx = table->schema()->GetFieldIndex(column_name);
   if (idx == -1) throw std::runtime_error("Column not found");
 
-  auto chunk = table->column(idx)->chunk(0);
+  auto col = table->column(idx)->chunk(0);
 
-  std::vector<int> indices(chunk->length());
+  std::vector<int> indices(col->length());
   std::iota(indices.begin(), indices.end(), 0);
 
   std::sort(indices.begin(), indices.end(), [&](int a, int b) {
-    auto A = chunk->GetScalar(a).ValueOrDie();
-    auto B = chunk->GetScalar(b).ValueOrDie();
+    auto A = col->GetScalar(a).ValueOrDie();
+    auto B = col->GetScalar(b).ValueOrDie();
 
     if (!A->is_valid) return false;
     if (!B->is_valid) return true;
 
-    return A->ToString() < B->ToString();
+    if (auto ai = std::dynamic_pointer_cast<arrow::Int64Scalar>(A)) {
+      auto bi = std::dynamic_pointer_cast<arrow::Int64Scalar>(B);
+      return asc ? ai->value < bi->value : ai->value > bi->value;
+    }
+
+    return asc ? A->ToString() < B->ToString() : A->ToString() > B->ToString();
   });
 
   std::vector<std::shared_ptr<arrow::ChunkedArray>> new_cols;
 
   for (int j = 0; j < table->num_columns(); j++) {
-    auto col = table->column(j)->chunk(0);
+    auto c = table->column(j)->chunk(0);
 
     arrow::StringBuilder builder;
 
     for (int i : indices) {
-      auto scalar = col->GetScalar(i).ValueOrDie();
-
-      if (!scalar->is_valid)
+      auto v = c->GetScalar(i).ValueOrDie();
+      if (!v->is_valid)
         builder.AppendNull();
       else
-        builder.Append(scalar->ToString());
+        builder.Append(v->ToString());
     }
 
     std::shared_ptr<arrow::Array> arr;
@@ -181,144 +276,6 @@ EagerDataFrame EagerDataFrame::sort(const std::string& column_name) const {
   }
 
   return EagerDataFrame(arrow::Table::Make(table->schema(), new_cols));
-}
-
-// ================= GROUP BY =================
-
-GroupedDataFrame EagerDataFrame::group_by(
-    const std::vector<std::string>& column_names) const {
-  int idx = table->schema()->GetFieldIndex(column_names[0]);
-  auto chunk = table->column(idx)->chunk(0);
-
-  std::map<std::string, std::vector<int>> groups;
-
-  for (int i = 0; i < chunk->length(); i++) {
-    auto scalar = chunk->GetScalar(i).ValueOrDie();
-    if (!scalar->is_valid) continue;
-
-    groups[scalar->ToString()].push_back(i);
-  }
-
-  return GroupedDataFrame(table, groups);
-}
-
-// ================= AGGREGATE =================
-
-EagerDataFrame GroupedDataFrame::aggregate(const std::string& column_name,
-                                           const std::string& op) const {
-  int idx = table->schema()->GetFieldIndex(column_name);
-  auto chunk = table->column(idx)->chunk(0);
-
-  arrow::StringBuilder key_builder;
-  arrow::Int64Builder val_builder;
-
-  for (auto& [key, rows] : groups) {
-    bool found = false;
-    int64_t result = 0;
-
-    if (op == "count") {
-      int count = 0;
-      for (int i : rows) {
-        auto s = chunk->GetScalar(i).ValueOrDie();
-        if (s->is_valid) count++;
-      }
-      result = count;
-      found = true;
-    }
-
-    else if (op == "sum" || op == "mean" || op == "min" || op == "max") {
-      int64_t sum = 0;
-      int count = 0;
-      int64_t minv = 0, maxv = 0;
-
-      for (int i : rows) {
-        auto s = chunk->GetScalar(i).ValueOrDie();
-        if (!s->is_valid) continue;
-
-        auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(s);
-        if (!val) continue;
-
-        int64_t v = val->value;
-
-        if (!found) {
-          minv = maxv = v;
-          found = true;
-        }
-
-        sum += v;
-        count++;
-
-        if (v < minv) minv = v;
-        if (v > maxv) maxv = v;
-      }
-
-      if (op == "sum")
-        result = sum;
-      else if (op == "mean" && count > 0)
-        result = sum / count;
-      else if (op == "min")
-        result = minv;
-      else if (op == "max")
-        result = maxv;
-    }
-
-    key_builder.Append(key);
-
-    if (!found)
-      val_builder.AppendNull();
-    else
-      val_builder.Append(result);
-  }
-
-  std::shared_ptr<arrow::Array> keys, vals;
-  key_builder.Finish(&keys);
-  val_builder.Finish(&vals);
-
-  return EagerDataFrame(arrow::Table::Make(
-      arrow::schema({arrow::field("group_key", arrow::utf8()),
-                     arrow::field(column_name + "_" + op, arrow::int64())}),
-      {std::make_shared<arrow::ChunkedArray>(keys),
-       std::make_shared<arrow::ChunkedArray>(vals)}));
-}
-
-// ================= WRITE =================
-
-void EagerDataFrame::write_csv(const std::string& path) const {
-  auto output = arrow::io::FileOutputStream::Open(path).ValueOrDie();
-  auto options = arrow::csv::WriteOptions::Defaults();
-
-  auto status = arrow::csv::WriteCSV(*table, options, output.get());
-
-  if (!status.ok()) {
-    throw std::runtime_error(status.ToString());
-  }
-}
-
-void EagerDataFrame::write_parquet(const std::string& path) const {
-  auto outfile = arrow::io::FileOutputStream::Open(path).ValueOrDie();
-
-  // create writer (modern API)
-  auto writer_result = parquet::arrow::FileWriter::Open(
-      *table->schema(), arrow::default_memory_pool(), outfile);
-
-  if (!writer_result.ok()) {
-    throw std::runtime_error(writer_result.status().ToString());
-  }
-
-  std::unique_ptr<parquet::arrow::FileWriter> writer =
-      std::move(writer_result.ValueOrDie());
-
-  // write table
-  auto status = writer->WriteTable(*table, table->num_rows());
-  if (!status.ok()) {
-    throw std::runtime_error(status.ToString());
-  }
-
-  // close
-  status = writer->Close();
-  if (!status.ok()) {
-    throw std::runtime_error(status.ToString());
-  }
 }
 
 }  // namespace dataframelib

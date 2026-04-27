@@ -33,9 +33,7 @@ class ColumnExpr : public Expr {
   std::vector<std::shared_ptr<arrow::Scalar>> evaluate(
       const std::shared_ptr<arrow::Table>& table) const override {
     int idx = table->schema()->GetFieldIndex(name);
-    if (idx == -1) {
-      throw std::runtime_error("Column not found: " + name);
-    }
+    if (idx == -1) throw std::runtime_error("Column not found: " + name);
 
     auto chunk = table->column(idx)->chunk(0);
 
@@ -63,6 +61,8 @@ class LiteralExpr : public Expr {
     return std::vector<std::shared_ptr<arrow::Scalar>>(table->num_rows(),
                                                        value);
   }
+
+  const std::shared_ptr<arrow::Scalar>& getValue() const { return value; }
 };
 
 // ================= OP TYPES =================
@@ -72,18 +72,22 @@ enum class OpType {
   MUL,
   DIV,
   MOD,
+
   GT,
   LT,
   GE,
   LE,
   EQ,
   NEQ,
+
   AND,
   OR,
+  NOT,
+
   ABS,
   IS_NULL,
   IS_NOT_NULL,
-  NOT,
+
   LENGTH,
   CONTAINS,
   STARTS_WITH,
@@ -91,6 +95,12 @@ enum class OpType {
   TO_LOWER,
   TO_UPPER
 };
+
+// ================= HELPERS =================
+
+inline std::shared_ptr<arrow::Scalar> make_null() {
+  return std::make_shared<arrow::NullScalar>();
+}
 
 // ================= BINARY =================
 class BinaryExpr : public Expr {
@@ -103,130 +113,134 @@ class BinaryExpr : public Expr {
   BinaryExpr(std::shared_ptr<Expr> l, std::shared_ptr<Expr> r, OpType o)
       : left(l), right(r), op(o) {}
 
-  // ✅ REQUIRED FOR OPTIMIZER
   const std::shared_ptr<Expr>& getLeft() const { return left; }
   const std::shared_ptr<Expr>& getRight() const { return right; }
   OpType getOp() const { return op; }
 
   std::vector<std::shared_ptr<arrow::Scalar>> evaluate(
       const std::shared_ptr<arrow::Table>& table) const override {
-    auto lvals = left->evaluate(table);
-    auto rvals = right->evaluate(table);
+    auto L = left->evaluate(table);
+    auto R = right->evaluate(table);
 
     std::vector<std::shared_ptr<arrow::Scalar>> result;
-    result.reserve(lvals.size());
+    result.reserve(L.size());
 
-    for (size_t i = 0; i < lvals.size(); i++) {
-      auto L = lvals[i];
-      auto R = rvals[i];
+    for (size_t i = 0; i < L.size(); i++) {
+      auto l = L[i];
+      auto r = R[i];
 
-      if (!L->is_valid || !R->is_valid) {
-        result.push_back(std::make_shared<arrow::NullScalar>());
+      // NULL PROPAGATION
+      if (!l->is_valid || !r->is_valid) {
+        result.push_back(make_null());
         continue;
       }
 
       // ===== INT =====
-      auto li = std::dynamic_pointer_cast<arrow::Int64Scalar>(L);
-      auto ri = std::dynamic_pointer_cast<arrow::Int64Scalar>(R);
+      if (auto li = std::dynamic_pointer_cast<arrow::Int64Scalar>(l)) {
+        auto ri = std::dynamic_pointer_cast<arrow::Int64Scalar>(r);
+        if (!ri) throw std::runtime_error("Type mismatch");
 
-      if (li && ri) {
-        int64_t lv = li->value;
-        int64_t rv = ri->value;
+        int64_t a = li->value;
+        int64_t b = ri->value;
 
         switch (op) {
           case OpType::ADD:
-            result.push_back(std::make_shared<arrow::Int64Scalar>(lv + rv));
+            result.push_back(std::make_shared<arrow::Int64Scalar>(a + b));
             break;
           case OpType::SUB:
-            result.push_back(std::make_shared<arrow::Int64Scalar>(lv - rv));
+            result.push_back(std::make_shared<arrow::Int64Scalar>(a - b));
             break;
           case OpType::MUL:
-            result.push_back(std::make_shared<arrow::Int64Scalar>(lv * rv));
+            result.push_back(std::make_shared<arrow::Int64Scalar>(a * b));
             break;
           case OpType::DIV:
-            if (rv == 0)
-              result.push_back(std::make_shared<arrow::NullScalar>());
-            else
-              result.push_back(std::make_shared<arrow::Int64Scalar>(lv / rv));
+            result.push_back(b == 0
+                                 ? make_null()
+                                 : std::make_shared<arrow::Int64Scalar>(a / b));
             break;
           case OpType::MOD:
-            if (rv == 0)
-              result.push_back(std::make_shared<arrow::NullScalar>());
-            else
-              result.push_back(std::make_shared<arrow::Int64Scalar>(lv % rv));
+            result.push_back(b == 0
+                                 ? make_null()
+                                 : std::make_shared<arrow::Int64Scalar>(a % b));
             break;
 
           case OpType::GT:
-            result.push_back(std::make_shared<arrow::BooleanScalar>(lv > rv));
+            result.push_back(std::make_shared<arrow::BooleanScalar>(a > b));
             break;
           case OpType::LT:
-            result.push_back(std::make_shared<arrow::BooleanScalar>(lv < rv));
+            result.push_back(std::make_shared<arrow::BooleanScalar>(a < b));
             break;
           case OpType::GE:
-            result.push_back(std::make_shared<arrow::BooleanScalar>(lv >= rv));
+            result.push_back(std::make_shared<arrow::BooleanScalar>(a >= b));
             break;
           case OpType::LE:
-            result.push_back(std::make_shared<arrow::BooleanScalar>(lv <= rv));
+            result.push_back(std::make_shared<arrow::BooleanScalar>(a <= b));
             break;
           case OpType::EQ:
-            result.push_back(std::make_shared<arrow::BooleanScalar>(lv == rv));
+            result.push_back(std::make_shared<arrow::BooleanScalar>(a == b));
             break;
           case OpType::NEQ:
-            result.push_back(std::make_shared<arrow::BooleanScalar>(lv != rv));
+            result.push_back(std::make_shared<arrow::BooleanScalar>(a != b));
             break;
 
           default:
-            throw std::runtime_error("Invalid int operation");
+            throw std::runtime_error("Invalid int op");
         }
-
         continue;
       }
 
       // ===== BOOL =====
-      auto lb = std::dynamic_pointer_cast<arrow::BooleanScalar>(L);
-      auto rb = std::dynamic_pointer_cast<arrow::BooleanScalar>(R);
+      if (auto lb = std::dynamic_pointer_cast<arrow::BooleanScalar>(l)) {
+        auto rb = std::dynamic_pointer_cast<arrow::BooleanScalar>(r);
+        if (!rb) throw std::runtime_error("Type mismatch");
 
-      if (lb && rb) {
         if (op == OpType::AND)
           result.push_back(
               std::make_shared<arrow::BooleanScalar>(lb->value && rb->value));
         else if (op == OpType::OR)
           result.push_back(
               std::make_shared<arrow::BooleanScalar>(lb->value || rb->value));
+        else if (op == OpType::EQ)
+          result.push_back(
+              std::make_shared<arrow::BooleanScalar>(lb->value == rb->value));
+        else if (op == OpType::NEQ)
+          result.push_back(
+              std::make_shared<arrow::BooleanScalar>(lb->value != rb->value));
         else
-          throw std::runtime_error("Invalid boolean operation");
+          throw std::runtime_error("Invalid bool op");
 
         continue;
       }
 
       // ===== STRING =====
-      auto ls = std::dynamic_pointer_cast<arrow::StringScalar>(L);
-      auto rs = std::dynamic_pointer_cast<arrow::StringScalar>(R);
+      if (auto ls = std::dynamic_pointer_cast<arrow::StringScalar>(l)) {
+        auto rs = std::dynamic_pointer_cast<arrow::StringScalar>(r);
+        if (!rs) throw std::runtime_error("Type mismatch");
 
-      if (ls && rs) {
-        std::string lv = ls->ToString();
-        std::string rv = rs->ToString();
+        std::string a = ls->ToString();
+        std::string b = rs->ToString();
 
         if (op == OpType::CONTAINS)
           result.push_back(std::make_shared<arrow::BooleanScalar>(
-              lv.find(rv) != std::string::npos));
-
+              a.find(b) != std::string::npos));
         else if (op == OpType::STARTS_WITH)
           result.push_back(
-              std::make_shared<arrow::BooleanScalar>(lv.rfind(rv, 0) == 0));
-
+              std::make_shared<arrow::BooleanScalar>(a.rfind(b, 0) == 0));
         else if (op == OpType::ENDS_WITH)
           result.push_back(std::make_shared<arrow::BooleanScalar>(
-              lv.size() >= rv.size() &&
-              lv.compare(lv.size() - rv.size(), rv.size(), rv) == 0));
-
+              a.size() >= b.size() &&
+              a.compare(a.size() - b.size(), b.size(), b) == 0));
+        else if (op == OpType::EQ)
+          result.push_back(std::make_shared<arrow::BooleanScalar>(a == b));
+        else if (op == OpType::NEQ)
+          result.push_back(std::make_shared<arrow::BooleanScalar>(a != b));
         else
-          throw std::runtime_error("Invalid string operation");
+          throw std::runtime_error("Invalid string op");
 
         continue;
       }
 
-      throw std::runtime_error("Type mismatch in BinaryExpr");
+      throw std::runtime_error("Unsupported type");
     }
 
     return result;
@@ -254,7 +268,7 @@ class UnaryExpr : public Expr {
         else if (op == OpType::IS_NOT_NULL)
           result.push_back(std::make_shared<arrow::BooleanScalar>(false));
         else
-          result.push_back(std::make_shared<arrow::NullScalar>());
+          result.push_back(make_null());
         continue;
       }
 
@@ -281,18 +295,13 @@ class UnaryExpr : public Expr {
         if (op == OpType::LENGTH)
           result.push_back(
               std::make_shared<arrow::Int64Scalar>((int64_t)str.size()));
-
         else if (op == OpType::TO_LOWER) {
           std::transform(str.begin(), str.end(), str.begin(), ::tolower);
           result.push_back(std::make_shared<arrow::StringScalar>(str));
-        }
-
-        else if (op == OpType::TO_UPPER) {
+        } else if (op == OpType::TO_UPPER) {
           std::transform(str.begin(), str.end(), str.begin(), ::toupper);
           result.push_back(std::make_shared<arrow::StringScalar>(str));
-        }
-
-        else
+        } else
           throw std::runtime_error("Invalid string unary");
 
         continue;
@@ -310,16 +319,56 @@ inline std::shared_ptr<Expr> col(const std::string& name) {
   return std::make_shared<ColumnExpr>(name);
 }
 
-inline std::shared_ptr<Expr> lit(std::shared_ptr<arrow::Scalar> v) {
-  return std::make_shared<LiteralExpr>(v);
+inline std::shared_ptr<Expr> lit(int64_t v) {
+  return std::make_shared<LiteralExpr>(std::make_shared<arrow::Int64Scalar>(v));
 }
 
-inline std::shared_ptr<Expr> abs(std::shared_ptr<Expr> e) {
-  return std::make_shared<UnaryExpr>(e, OpType::ABS);
+// ================= OPERATORS =================
+inline std::shared_ptr<Expr> operator+(std::shared_ptr<Expr> a,
+                                       std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::ADD);
+}
+inline std::shared_ptr<Expr> operator-(std::shared_ptr<Expr> a,
+                                       std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::SUB);
+}
+inline std::shared_ptr<Expr> operator*(std::shared_ptr<Expr> a,
+                                       std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::MUL);
+}
+inline std::shared_ptr<Expr> operator/(std::shared_ptr<Expr> a,
+                                       std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::DIV);
+}
+inline std::shared_ptr<Expr> operator>(std::shared_ptr<Expr> a,
+                                       std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::GT);
+}
+inline std::shared_ptr<Expr> operator<(std::shared_ptr<Expr> a,
+                                       std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::LT);
+}
+inline std::shared_ptr<Expr> operator==(std::shared_ptr<Expr> a,
+                                        std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::EQ);
+}
+inline std::shared_ptr<Expr> operator!=(std::shared_ptr<Expr> a,
+                                        std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::NEQ);
+}
+inline std::shared_ptr<Expr> operator&&(std::shared_ptr<Expr> a,
+                                        std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::AND);
+}
+inline std::shared_ptr<Expr> operator||(std::shared_ptr<Expr> a,
+                                        std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::OR);
 }
 
-inline std::shared_ptr<Expr> length(std::shared_ptr<Expr> e) {
-  return std::make_shared<UnaryExpr>(e, OpType::LENGTH);
+// ================= STRING HELPERS =================
+
+inline std::shared_ptr<Expr> length(std::shared_ptr<Expr> a) {
+  return std::make_shared<UnaryExpr>(a, OpType::LENGTH);
 }
 
 inline std::shared_ptr<Expr> contains(std::shared_ptr<Expr> a,
@@ -337,12 +386,11 @@ inline std::shared_ptr<Expr> ends_with(std::shared_ptr<Expr> a,
   return std::make_shared<BinaryExpr>(a, b, OpType::ENDS_WITH);
 }
 
-inline std::shared_ptr<Expr> to_lower(std::shared_ptr<Expr> e) {
-  return std::make_shared<UnaryExpr>(e, OpType::TO_LOWER);
+inline std::shared_ptr<Expr> to_lower(std::shared_ptr<Expr> a) {
+  return std::make_shared<UnaryExpr>(a, OpType::TO_LOWER);
 }
 
-inline std::shared_ptr<Expr> to_upper(std::shared_ptr<Expr> e) {
-  return std::make_shared<UnaryExpr>(e, OpType::TO_UPPER);
+inline std::shared_ptr<Expr> to_upper(std::shared_ptr<Expr> a) {
+  return std::make_shared<UnaryExpr>(a, OpType::TO_UPPER);
 }
-
 }  // namespace dataframelib

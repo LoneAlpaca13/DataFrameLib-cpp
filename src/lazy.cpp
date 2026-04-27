@@ -26,7 +26,7 @@ std::string getFilterColumn(const std::shared_ptr<Expr>& expr) {
 std::vector<Operation> optimize(const std::vector<Operation>& ops) {
   std::vector<Operation> result;
 
-  for (const auto& op : ops) {
+  for (auto op : ops) {
     // =========================
     // 1. FILTER PUSHDOWN
     // =========================
@@ -85,9 +85,24 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
 
         // x + 0 → x
         if (bin->getOp() == OpType::ADD) {
-          if (auto lit = std::dynamic_pointer_cast<LiteralExpr>(right)) {
-            // assuming literal 0
-            op.expr = left;
+          // x + 0 → x
+          if (bin->getOp() == OpType::ADD) {
+            auto lit = std::dynamic_pointer_cast<LiteralExpr>(right);
+            if (lit) {
+              auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+                  lit->getValue());
+              if (val && val->value == 0) op.expr = left;
+            }
+          }
+
+          // x * 1 → x
+          if (bin->getOp() == OpType::MUL) {
+            auto lit = std::dynamic_pointer_cast<LiteralExpr>(right);
+            if (lit) {
+              auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+                  lit->getValue());
+              if (val && val->value == 1) op.expr = left;
+            }
           }
         }
 
@@ -107,11 +122,7 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
   return result;
 }
 
-// ================= CTOR =================
-
 LazyDataFrame::LazyDataFrame(const std::string& path) : csv_path(path) {}
-
-// ================= OPS =================
 
 LazyDataFrame LazyDataFrame::filter(std::shared_ptr<Expr> expr) const {
   LazyDataFrame df = *this;
@@ -149,28 +160,110 @@ LazyDataFrame LazyDataFrame::with_column(const std::string& name,
   return df;
 }
 
-LazyDataFrame LazyDataFrame::group_by(
-    const std::vector<std::string>& keys) const {
-  LazyDataFrame df = *this;
+GroupedDataFrame EagerDataFrame::group_by(
+    const std::vector<std::string>& column_names) const {
+  std::map<std::string, std::vector<int>> groups;
 
-  Operation op;
-  op.type = LazyOpType::GROUP_BY;
-  op.columns = keys;
+  for (int i = 0; i < table->num_rows(); i++) {
+    std::string key = "";
 
-  df.ops.push_back(op);
-  return df;
+    for (const auto& col_name : column_names) {
+      int idx = table->schema()->GetFieldIndex(col_name);
+      if (idx == -1) throw std::runtime_error("Column not found");
+
+      auto scalar = table->column(idx)->chunk(0)->GetScalar(i).ValueOrDie();
+
+      key += (scalar->is_valid ? scalar->ToString() : "null") + "|";
+    }
+
+    groups[key].push_back(i);
+  }
+
+  return GroupedDataFrame(table, groups);
 }
 
-LazyDataFrame LazyDataFrame::aggregate(
+EagerDataFrame GroupedDataFrame::aggregate(
     const std::vector<std::pair<std::string, std::string>>& agg_map) const {
-  LazyDataFrame df = *this;
+  std::vector<std::shared_ptr<arrow::Array>> result_arrays;
+  std::vector<std::shared_ptr<arrow::Field>> fields;
 
-  Operation op;
-  op.type = LazyOpType::AGGREGATE;
-  op.agg_map = agg_map;
+  // group key column
+  arrow::StringBuilder key_builder;
 
-  df.ops.push_back(op);
-  return df;
+  for (const auto& [key, _] : groups) {
+    key_builder.Append(key);
+  }
+
+  std::shared_ptr<arrow::Array> key_array;
+  key_builder.Finish(&key_array);
+
+  result_arrays.push_back(key_array);
+  fields.push_back(arrow::field("group_key", arrow::utf8()));
+
+  // each aggregation
+  for (const auto& [col_name, op] : agg_map) {
+    int idx = table->schema()->GetFieldIndex(col_name);
+    if (idx == -1) throw std::runtime_error("Column not found");
+
+    auto chunk = table->column(idx)->chunk(0);
+
+    arrow::Int64Builder builder;
+
+    for (const auto& [_, rows] : groups) {
+      int64_t sum = 0;
+      int count = 0;
+      int64_t minv = 0, maxv = 0;
+      bool found = false;
+
+      for (int i : rows) {
+        auto s = chunk->GetScalar(i).ValueOrDie();
+        if (!s->is_valid) continue;
+
+        auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(s);
+        if (!val) continue;
+
+        int64_t v = val->value;
+
+        if (!found) {
+          minv = maxv = v;
+          found = true;
+        }
+
+        sum += v;
+        count++;
+
+        minv = std::min(minv, v);
+        maxv = std::max(maxv, v);
+      }
+
+      if (!found) {
+        builder.AppendNull();
+        continue;
+      }
+
+      if (op == "sum")
+        builder.Append(sum);
+      else if (op == "mean")
+        builder.Append(count ? sum / count : 0);
+      else if (op == "count")
+        builder.Append(count);
+      else if (op == "min")
+        builder.Append(minv);
+      else if (op == "max")
+        builder.Append(maxv);
+      else
+        throw std::runtime_error("Unknown aggregation");
+    }
+
+    std::shared_ptr<arrow::Array> arr;
+    builder.Finish(&arr);
+
+    result_arrays.push_back(arr);
+    fields.push_back(arrow::field(col_name + "_" + op, arrow::int64()));
+  }
+
+  return EagerDataFrame(arrow::Table::Make(
+      std::make_shared<arrow::Schema>(fields), result_arrays));
 }
 
 LazyDataFrame LazyDataFrame::sort(const std::vector<std::string>& cols,
@@ -258,7 +351,12 @@ EagerDataFrame LazyDataFrame::collect() const {
     }
 
     else if (op.type == LazyOpType::SELECT) {
-      df = df.select(op.columns);
+      std::vector<std::shared_ptr<Expr>> exprs;
+      for (const auto& c : op.columns) {
+        exprs.push_back(col(c));
+      }
+
+      df = df.select(exprs);
     }
 
     else if (op.type == LazyOpType::WITH_COLUMN) {
@@ -283,15 +381,78 @@ EagerDataFrame LazyDataFrame::collect() const {
         throw std::runtime_error("aggregate() without group_by()");
 
       auto grouped = df.group_by(group_keys);
-      auto pair = op.agg_map[0];
-
-      df = grouped.aggregate(pair.first, pair.second);
+      df = grouped.aggregate(op.agg_map);
 
       has_group = false;
     }
   }
 
   return df;
+}
+
+EagerDataFrame EagerDataFrame::join(const EagerDataFrame& other,
+                                    const std::vector<std::string>& keys,
+                                    const std::string& how) const {
+  if (keys.empty()) throw std::runtime_error("Join keys required");
+
+  int left_idx = table->schema()->GetFieldIndex(keys[0]);
+  int right_idx = other.table->schema()->GetFieldIndex(keys[0]);
+
+  if (left_idx == -1 || right_idx == -1)
+    throw std::runtime_error("Join column not found");
+
+  auto left_col = table->column(left_idx)->chunk(0);
+  auto right_col = other.table->column(right_idx)->chunk(0);
+
+  std::vector<std::vector<std::string>> rows;
+
+  for (int i = 0; i < left_col->length(); i++) {
+    auto l = left_col->GetScalar(i).ValueOrDie();
+
+    for (int j = 0; j < right_col->length(); j++) {
+      auto r = right_col->GetScalar(j).ValueOrDie();
+
+      if (l->ToString() == r->ToString()) {
+        std::vector<std::string> row;
+
+        for (int c = 0; c < table->num_columns(); c++)
+          row.push_back(table->column(c)
+                            ->chunk(0)
+                            ->GetScalar(i)
+                            .ValueOrDie()
+                            ->ToString());
+        for (int c = 0; c < other.table->num_columns(); c++)
+          row.push_back(other.table->column(c)
+                            ->chunk(0)
+                            ->GetScalar(j)
+                            .ValueOrDie()
+                            ->ToString());
+        rows.push_back(row);
+      }
+    }
+  }
+
+  // build result as strings (simple but works)
+  std::vector<std::shared_ptr<arrow::Array>> arrays;
+
+  int total_cols = table->num_columns() + other.table->num_columns();
+
+  for (int c = 0; c < total_cols; c++) {
+    arrow::StringBuilder builder;
+    for (auto& row : rows) builder.Append(row[c]);
+
+    std::shared_ptr<arrow::Array> arr;
+    builder.Finish(&arr);
+    arrays.push_back(arr);
+  }
+
+  std::vector<std::shared_ptr<arrow::Field>> fields;
+
+  for (int c = 0; c < total_cols; c++)
+    fields.push_back(arrow::field("col" + std::to_string(c), arrow::utf8()));
+
+  return EagerDataFrame(
+      arrow::Table::Make(std::make_shared<arrow::Schema>(fields), arrays));
 }
 
 }  // namespace dataframelib
