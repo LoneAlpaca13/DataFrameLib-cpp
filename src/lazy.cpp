@@ -26,6 +26,37 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
   std::vector<Operation> result;
 
   for (auto op : ops) {
+    // ===== EXPRESSION SIMPLIFICATION =====
+    if (op.type == LazyOpType::WITH_COLUMN) {
+      if (auto bin = std::dynamic_pointer_cast<BinaryExpr>(op.expr)) {
+        // x + 0 → x
+        auto r = std::dynamic_pointer_cast<LiteralExpr>(bin->getRight());
+        if (r != nullptr) {
+          auto val =
+              std::dynamic_pointer_cast<arrow::Int64Scalar>(r->getValue());
+          if (val && val->value == 0 && bin->getOp() == OpType::ADD) {
+            op.expr = bin->getLeft();
+          }
+        }
+
+        // constant folding: lit + lit
+        auto l = std::dynamic_pointer_cast<LiteralExpr>(bin->getLeft());
+        auto rr = std::dynamic_pointer_cast<LiteralExpr>(bin->getRight());
+
+        if (l != nullptr && rr != nullptr) {
+          auto lv =
+              std::dynamic_pointer_cast<arrow::Int64Scalar>(l->getValue());
+          auto rv =
+              std::dynamic_pointer_cast<arrow::Int64Scalar>(rr->getValue());
+
+          if (lv && rv) {
+            int64_t val = lv->value + rv->value;
+            op.expr = lit(val);
+          }
+        }
+      }
+    }
+
     // ===== FILTER PUSHDOWN =====
     if (op.type == LazyOpType::FILTER) {
       size_t pos = result.size();
@@ -34,8 +65,9 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
         const auto& prev = result[pos - 1];
 
         if (prev.type == LazyOpType::GROUP_BY ||
-            prev.type == LazyOpType::AGGREGATE)
+            prev.type == LazyOpType::AGGREGATE) {
           break;
+        }
 
         pos--;
       }
@@ -44,7 +76,7 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
       continue;
     }
 
-    // ===== SELECT PUSHDOWN =====
+    // ===== SELECT (PROJECTION) PUSHDOWN =====
     if (op.type == LazyOpType::SELECT) {
       size_t pos = result.size();
 
@@ -52,36 +84,15 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
         const auto& prev = result[pos - 1];
 
         if (prev.type == LazyOpType::GROUP_BY ||
-            prev.type == LazyOpType::AGGREGATE)
+            prev.type == LazyOpType::AGGREGATE) {
           break;
+        }
 
         pos--;
       }
 
       result.insert(result.begin() + pos, op);
       continue;
-    }
-
-    // ===== CONSTANT FOLDING (basic) =====
-    if (op.type == LazyOpType::WITH_COLUMN) {
-      auto bin = std::dynamic_pointer_cast<BinaryExpr>(op.expr);
-
-      if (bin) {
-        auto l = std::dynamic_pointer_cast<LiteralExpr>(bin->getLeft());
-        auto r = std::dynamic_pointer_cast<LiteralExpr>(bin->getRight());
-
-        if (l != nullptr && r != nullptr) {
-          auto lv =
-              std::dynamic_pointer_cast<arrow::Int64Scalar>(l->getValue());
-          auto rv =
-              std::dynamic_pointer_cast<arrow::Int64Scalar>(r->getValue());
-
-          if (lv && rv) {
-            int64_t val = lv->value + rv->value;
-            op.expr = lit(val);
-          }
-        }
-      }
     }
 
     // ===== HEAD PUSHDOWN =====
@@ -92,8 +103,9 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
         const auto& prev = result[pos - 1];
 
         if (prev.type == LazyOpType::GROUP_BY ||
-            prev.type == LazyOpType::AGGREGATE)
+            prev.type == LazyOpType::AGGREGATE) {
           break;
+        }
 
         pos--;
       }
@@ -102,12 +114,12 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
       continue;
     }
 
+    // ===== DEFAULT =====
     result.push_back(op);
   }
 
   return result;
 }
-
 // ================= COLLECT =================
 
 EagerDataFrame LazyDataFrame::collect() const {
