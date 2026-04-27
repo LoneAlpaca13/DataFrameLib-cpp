@@ -39,10 +39,12 @@ EagerDataFrame read_parquet(const std::string& path) {
 
 // ================= SCAN =================
 
-LazyDataFrame scan_csv(const std::string& path) { return LazyDataFrame(path); }
+LazyDataFrame scan_csv(const std::string& path) {
+  return LazyDataFrame(path, SourceType::CSV);
+}
 
 LazyDataFrame scan_parquet(const std::string& path) {
-  return LazyDataFrame(path);
+  return LazyDataFrame(path, SourceType::PARQUET);
 }
 
 // ================= FROM COLUMNS =================

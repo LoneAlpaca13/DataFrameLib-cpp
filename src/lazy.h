@@ -8,8 +8,10 @@
 
 namespace dataframelib {
 
-// ================= OP TYPES =================
+// ================= SOURCE TYPE =================
+enum class SourceType { CSV, PARQUET };
 
+// ================= OP TYPES =================
 enum class LazyOpType {
   FILTER,
   SELECT,
@@ -17,11 +19,11 @@ enum class LazyOpType {
   GROUP_BY,
   AGGREGATE,
   SORT,
-  HEAD
+  HEAD,
+  JOIN  // ✅ added
 };
 
 // ================= OP STRUCT =================
-
 struct Operation {
   LazyOpType type;
 
@@ -31,18 +33,25 @@ struct Operation {
 
   std::vector<std::pair<std::string, std::string>> agg_map;
 
-  int n = 0;  // used for HEAD
+  int n = 0;
+
+  // ✅ JOIN SUPPORT (CORRECT PLACE)
+  class LazyDataFrame* join_df = nullptr;
+  std::vector<std::string> join_keys;
+  std::string join_how;
 };
 
 // ================= CLASS =================
-
 class LazyDataFrame {
  private:
   std::string csv_path;
   std::vector<Operation> ops;
 
+  SourceType source_type;
+
  public:
-  LazyDataFrame(const std::string& path);
+  // ✅ correct constructor
+  LazyDataFrame(const std::string& path, SourceType type);
 
   // operations
   LazyDataFrame filter(std::shared_ptr<Expr> expr) const;
@@ -54,9 +63,11 @@ class LazyDataFrame {
       const std::vector<std::pair<std::string, std::string>>& agg_map) const;
   LazyDataFrame sort(const std::vector<std::string>& cols, bool asc) const;
   LazyDataFrame head(int n) const;
-  LazyDataFrame* join_df = nullptr;
-  std::vector<std::string> join_keys;
-  std::string join_how;
+
+  // ✅ ADD THIS (missing before)
+  LazyDataFrame join(const LazyDataFrame& other,
+                     const std::vector<std::string>& keys,
+                     const std::string& how) const;
 
   // execution
   EagerDataFrame collect() const;

@@ -50,6 +50,12 @@ class ColumnExpr : public Expr {
  public:
   ColumnExpr(const std::string& col) : name(col) {}
 
+  std::pair<std::string, std::string> sum() const { return {name, "sum"}; }
+  std::pair<std::string, std::string> mean() const { return {name, "mean"}; }
+  std::pair<std::string, std::string> count() const { return {name, "count"}; }
+  std::pair<std::string, std::string> min() const { return {name, "min"}; }
+  std::pair<std::string, std::string> max() const { return {name, "max"}; }
+
   const std::string& getName() const { return name; }
 
   std::vector<std::shared_ptr<arrow::Scalar>> evaluate(
@@ -156,6 +162,35 @@ class BinaryExpr : public Expr {
         result.push_back(make_null());
         continue;
       }
+      // int + double → double
+      if (std::dynamic_pointer_cast<arrow::Int64Scalar>(l) &&
+          std::dynamic_pointer_cast<arrow::DoubleScalar>(r)) {
+        double a = std::dynamic_pointer_cast<arrow::Int64Scalar>(l)->value;
+        double b = std::dynamic_pointer_cast<arrow::DoubleScalar>(r)->value;
+
+        result.push_back(std::make_shared<arrow::DoubleScalar>(a + b));
+        continue;
+      }
+
+      // float + double → double
+      if (std::dynamic_pointer_cast<arrow::FloatScalar>(l) &&
+          std::dynamic_pointer_cast<arrow::DoubleScalar>(r)) {
+        float a = std::dynamic_pointer_cast<arrow::FloatScalar>(l)->value;
+        double b = std::dynamic_pointer_cast<arrow::DoubleScalar>(r)->value;
+
+        result.push_back(std::make_shared<arrow::DoubleScalar>(a + b));
+        continue;
+      }
+
+      // double + float → double
+      if (std::dynamic_pointer_cast<arrow::DoubleScalar>(l) &&
+          std::dynamic_pointer_cast<arrow::FloatScalar>(r)) {
+        double a = std::dynamic_pointer_cast<arrow::DoubleScalar>(l)->value;
+        float b = std::dynamic_pointer_cast<arrow::FloatScalar>(r)->value;
+
+        result.push_back(std::make_shared<arrow::DoubleScalar>(a + b));
+        continue;
+      }
 
       // ===== INT =====
       if (auto li = std::dynamic_pointer_cast<arrow::Int64Scalar>(l)) {
@@ -208,6 +243,30 @@ class BinaryExpr : public Expr {
           default:
             throw std::runtime_error("Invalid int op");
         }
+        continue;
+      }
+
+      // ===== FLOAT (float32) =====
+      if (auto lf = std::dynamic_pointer_cast<arrow::FloatScalar>(l)) {
+        auto rf = std::dynamic_pointer_cast<arrow::FloatScalar>(r);
+        if (!rf) throw std::runtime_error("Type mismatch");
+
+        float a = lf->value;
+        float b = rf->value;
+
+        if (op == OpType::ADD)
+          result.push_back(std::make_shared<arrow::FloatScalar>(a + b));
+        else if (op == OpType::SUB)
+          result.push_back(std::make_shared<arrow::FloatScalar>(a - b));
+        else if (op == OpType::MUL)
+          result.push_back(std::make_shared<arrow::FloatScalar>(a * b));
+        else if (op == OpType::DIV)
+          result.push_back(b == 0
+                               ? make_null()
+                               : std::make_shared<arrow::FloatScalar>(a / b));
+        else
+          throw std::runtime_error("Invalid float op");
+
         continue;
       }
       // ===== DOUBLE =====
@@ -367,6 +426,40 @@ class UnaryExpr : public Expr {
 // ================= HELPERS =================
 inline std::shared_ptr<Expr> col(const std::string& name) {
   return std::make_shared<ColumnExpr>(name);
+}
+
+inline std::shared_ptr<Expr> operator~(std::shared_ptr<Expr> a) {
+  return std::make_shared<UnaryExpr>(a, OpType::NOT);
+}
+
+inline std::pair<std::string, std::string> sum(std::shared_ptr<Expr> e) {
+  auto c = std::dynamic_pointer_cast<ColumnExpr>(e);
+  if (!c) throw std::runtime_error("sum() expects column");
+  return {c->getName(), "sum"};
+}
+
+inline std::pair<std::string, std::string> mean(std::shared_ptr<Expr> e) {
+  auto c = std::dynamic_pointer_cast<ColumnExpr>(e);
+  if (!c) throw std::runtime_error("mean() expects column");
+  return {c->getName(), "mean"};
+}
+
+inline std::pair<std::string, std::string> count(std::shared_ptr<Expr> e) {
+  auto c = std::dynamic_pointer_cast<ColumnExpr>(e);
+  if (!c) throw std::runtime_error("count() expects column");
+  return {c->getName(), "count"};
+}
+
+inline std::pair<std::string, std::string> min(std::shared_ptr<Expr> e) {
+  auto c = std::dynamic_pointer_cast<ColumnExpr>(e);
+  if (!c) throw std::runtime_error("min() expects column");
+  return {c->getName(), "min"};
+}
+
+inline std::pair<std::string, std::string> max(std::shared_ptr<Expr> e) {
+  auto c = std::dynamic_pointer_cast<ColumnExpr>(e);
+  if (!c) throw std::runtime_error("max() expects column");
+  return {c->getName(), "max"};
 }
 
 inline std::shared_ptr<Expr> lit(int64_t v) {
