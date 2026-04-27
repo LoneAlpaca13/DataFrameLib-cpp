@@ -1,4 +1,5 @@
 #pragma once
+
 #include <arrow/api.h>
 
 #include <map>
@@ -10,7 +11,12 @@
 
 namespace dataframelib {
 
+// ================= FORWARD DECLARATIONS =================
+
 class EagerDataFrame;
+class Expr;
+
+// ================= GROUPED DATAFRAME =================
 
 class GroupedDataFrame {
  private:
@@ -20,7 +26,7 @@ class GroupedDataFrame {
  public:
   GroupedDataFrame(std::shared_ptr<arrow::Table> t,
                    std::map<std::string, std::vector<int>> g)
-      : table(t), groups(g) {}
+      : table(std::move(t)), groups(std::move(g)) {}
 
   void printGroups() const;
 
@@ -28,26 +34,31 @@ class GroupedDataFrame {
                            const std::string& op) const;
 };
 
+// ================= EAGER DATAFRAME =================
+
 class EagerDataFrame {
  private:
   std::shared_ptr<arrow::Table> table;
 
  public:
-  EagerDataFrame(std::shared_ptr<arrow::Table> t);
+  explicit EagerDataFrame(std::shared_ptr<arrow::Table> t);
 
   std::shared_ptr<arrow::Table> getTable() const;
 
+  // printing
   void printSchema() const;
   void printHead(int n = 5) const;
 
+  // basic ops
   EagerDataFrame select(const std::vector<std::string>& columns) const;
   EagerDataFrame head(int n) const;
 
+  // expressions
   EagerDataFrame filter(std::shared_ptr<Expr> predicate) const;
-
   EagerDataFrame with_column(const std::string& name,
                              std::shared_ptr<Expr> expr) const;
 
+  // transformations
   EagerDataFrame sort(const std::string& column_name) const;
 
   GroupedDataFrame group_by(const std::vector<std::string>& column_names) const;
@@ -55,6 +66,9 @@ class EagerDataFrame {
   EagerDataFrame join(const EagerDataFrame& other,
                       const std::vector<std::string>& column_names,
                       const std::string& how) const;
-};
 
+  // output
+  void write_csv(const std::string& path) const;
+  void write_parquet(const std::string& path) const;
+};
 }  // namespace dataframelib

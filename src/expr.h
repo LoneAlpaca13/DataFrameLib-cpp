@@ -76,7 +76,96 @@ class LiteralExpr : public Expr {
 };
 
 // ================= OP ENUM =================
-enum class OpType { ADD, SUB, MUL, DIV, MOD, GT, LT, GE, LE, EQ, NEQ, AND, OR };
+enum class OpType {
+  // arithmetic
+  ADD,
+  SUB,
+  MUL,
+  DIV,
+  MOD,
+
+  // comparison
+  GT,
+  LT,
+  GE,
+  LE,
+  EQ,
+  NEQ,
+
+  // logical
+  AND,
+  OR,
+
+  // unary (new)
+  ABS,
+  IS_NULL,
+  IS_NOT_NULL,
+  NOT
+};
+
+class UnaryExpr : public Expr {
+ private:
+  std::shared_ptr<Expr> child;
+  OpType op;
+
+ public:
+  UnaryExpr(std::shared_ptr<Expr> c, OpType o) : child(c), op(o) {}
+
+  std::vector<std::shared_ptr<arrow::Scalar>> evaluate(
+      const std::shared_ptr<arrow::Table>& table) const override {
+    auto vals = child->evaluate(table);
+
+    std::vector<std::shared_ptr<arrow::Scalar>> result;
+    result.reserve(vals.size());
+
+    for (auto& v : vals) {
+      // NULL propagation
+      if (!v->is_valid) {
+        if (op == OpType::IS_NULL)
+          result.push_back(std::make_shared<arrow::BooleanScalar>(true));
+        else if (op == OpType::IS_NOT_NULL)
+          result.push_back(std::make_shared<arrow::BooleanScalar>(false));
+        else
+          result.push_back(std::make_shared<arrow::NullScalar>());
+        continue;
+      }
+
+      // INT
+      if (auto int_val = std::dynamic_pointer_cast<arrow::Int64Scalar>(v)) {
+        int64_t x = int_val->value;
+
+        if (op == OpType::ABS)
+          result.push_back(std::make_shared<arrow::Int64Scalar>(std::abs(x)));
+        else if (op == OpType::IS_NULL)
+          result.push_back(std::make_shared<arrow::BooleanScalar>(false));
+        else if (op == OpType::IS_NOT_NULL)
+          result.push_back(std::make_shared<arrow::BooleanScalar>(true));
+        else
+          throw std::runtime_error("Invalid unary int op");
+      }
+
+      // BOOL
+      else if (auto b = std::dynamic_pointer_cast<arrow::BooleanScalar>(v)) {
+        bool val = b->value;
+
+        if (op == OpType::NOT)
+          result.push_back(std::make_shared<arrow::BooleanScalar>(!val));
+        else if (op == OpType::IS_NULL)
+          result.push_back(std::make_shared<arrow::BooleanScalar>(false));
+        else if (op == OpType::IS_NOT_NULL)
+          result.push_back(std::make_shared<arrow::BooleanScalar>(true));
+        else
+          throw std::runtime_error("Invalid unary bool op");
+      }
+
+      else {
+        throw std::runtime_error("Unsupported type in UnaryExpr");
+      }
+    }
+
+    return result;
+  }
+};
 
 class BinaryExpr : public Expr {
  private:
@@ -254,6 +343,35 @@ class BinaryExpr : public Expr {
     }
 
     return result;
+  }
+};
+
+inline std::shared_ptr<Expr> abs(std::shared_ptr<Expr> e) {
+  return std::make_shared<UnaryExpr>(e, OpType::ABS);
+}
+
+inline std::shared_ptr<Expr> is_null(std::shared_ptr<Expr> e) {
+  return std::make_shared<UnaryExpr>(e, OpType::IS_NULL);
+}
+
+inline std::shared_ptr<Expr> is_not_null(std::shared_ptr<Expr> e) {
+  return std::make_shared<UnaryExpr>(e, OpType::IS_NOT_NULL);
+}
+
+inline std::shared_ptr<Expr> not_(std::shared_ptr<Expr> e) {
+  return std::make_shared<UnaryExpr>(e, OpType::NOT);
+}
+
+class AliasExpr : public Expr {
+ private:
+  std::shared_ptr<Expr> child;
+
+ public:
+  AliasExpr(std::shared_ptr<Expr> c) : child(c) {}
+
+  std::vector<std::shared_ptr<arrow::Scalar>> evaluate(
+      const std::shared_ptr<arrow::Table>& table) const override {
+    return child->evaluate(table);
   }
 };
 }  // namespace dataframelib
