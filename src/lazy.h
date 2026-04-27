@@ -54,6 +54,9 @@ class LazyDataFrame {
       const std::vector<std::pair<std::string, std::string>>& agg_map) const;
   LazyDataFrame sort(const std::vector<std::string>& cols, bool asc) const;
   LazyDataFrame head(int n) const;
+  LazyDataFrame* join_df = nullptr;
+  std::vector<std::string> join_keys;
+  std::string join_how;
 
   // execution
   EagerDataFrame collect() const;

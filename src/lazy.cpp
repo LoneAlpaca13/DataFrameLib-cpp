@@ -27,9 +27,6 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
   std::vector<Operation> result;
 
   for (auto op : ops) {
-    // =========================
-    // 1. FILTER PUSHDOWN
-    // =========================
     if (op.type == LazyOpType::FILTER) {
       std::string filter_col = getFilterColumn(op.expr);
 
@@ -60,9 +57,6 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
       continue;
     }
 
-    // =========================
-    // 2. PROJECTION PUSHDOWN
-    // =========================
     if (op.type == LazyOpType::SELECT) {
       // remove redundant selects
       if (!result.empty() && result.back().type == LazyOpType::SELECT) {
@@ -73,9 +67,6 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
       continue;
     }
 
-    // =========================
-    // 3. EXPRESSION SIMPLIFICATION
-    // =========================
     if (op.type == LazyOpType::WITH_COLUMN) {
       auto bin = std::dynamic_pointer_cast<BinaryExpr>(op.expr);
 
@@ -85,31 +76,21 @@ std::vector<Operation> optimize(const std::vector<Operation>& ops) {
 
         // x + 0 → x
         if (bin->getOp() == OpType::ADD) {
-          // x + 0 → x
-          if (bin->getOp() == OpType::ADD) {
-            auto lit = std::dynamic_pointer_cast<LiteralExpr>(right);
-            if (lit) {
-              auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(
-                  lit->getValue());
-              if (val && val->value == 0) op.expr = left;
-            }
-          }
-
-          // x * 1 → x
-          if (bin->getOp() == OpType::MUL) {
-            auto lit = std::dynamic_pointer_cast<LiteralExpr>(right);
-            if (lit) {
-              auto val = std::dynamic_pointer_cast<arrow::Int64Scalar>(
-                  lit->getValue());
-              if (val && val->value == 1) op.expr = left;
-            }
+          auto lit = std::dynamic_pointer_cast<LiteralExpr>(right);
+          if (lit) {
+            auto val =
+                std::dynamic_pointer_cast<arrow::Int64Scalar>(lit->getValue());
+            if (val && val->value == 0) op.expr = left;
           }
         }
 
         // x * 1 → x
         if (bin->getOp() == OpType::MUL) {
-          if (auto lit = std::dynamic_pointer_cast<LiteralExpr>(right)) {
-            op.expr = left;
+          auto lit = std::dynamic_pointer_cast<LiteralExpr>(right);
+          if (lit) {
+            auto val =
+                std::dynamic_pointer_cast<arrow::Int64Scalar>(lit->getValue());
+            if (val && val->value == 1) op.expr = left;
           }
         }
       }
@@ -364,7 +345,7 @@ EagerDataFrame LazyDataFrame::collect() const {
     }
 
     else if (op.type == LazyOpType::SORT) {
-      df = df.sort(op.columns[0]);
+      df = df.sort(op.columns[0], true);  // or pass op.asc if stored
     }
 
     else if (op.type == LazyOpType::HEAD) {
@@ -398,9 +379,6 @@ EagerDataFrame EagerDataFrame::join(const EagerDataFrame& other,
   int left_idx = table->schema()->GetFieldIndex(keys[0]);
   int right_idx = other.table->schema()->GetFieldIndex(keys[0]);
 
-  if (left_idx == -1 || right_idx == -1)
-    throw std::runtime_error("Join column not found");
-
   auto left_col = table->column(left_idx)->chunk(0);
   auto right_col = other.table->column(right_idx)->chunk(0);
 
@@ -408,11 +386,14 @@ EagerDataFrame EagerDataFrame::join(const EagerDataFrame& other,
 
   for (int i = 0; i < left_col->length(); i++) {
     auto l = left_col->GetScalar(i).ValueOrDie();
+    bool matched = false;
 
     for (int j = 0; j < right_col->length(); j++) {
       auto r = right_col->GetScalar(j).ValueOrDie();
 
       if (l->ToString() == r->ToString()) {
+        matched = true;
+
         std::vector<std::string> row;
 
         for (int c = 0; c < table->num_columns(); c++)
@@ -421,20 +402,34 @@ EagerDataFrame EagerDataFrame::join(const EagerDataFrame& other,
                             ->GetScalar(i)
                             .ValueOrDie()
                             ->ToString());
+
         for (int c = 0; c < other.table->num_columns(); c++)
           row.push_back(other.table->column(c)
                             ->chunk(0)
                             ->GetScalar(j)
                             .ValueOrDie()
                             ->ToString());
+
         rows.push_back(row);
       }
     }
+
+    // LEFT JOIN support
+    if (how == "left" && !matched) {
+      std::vector<std::string> row;
+
+      for (int c = 0; c < table->num_columns(); c++)
+        row.push_back(
+            table->column(c)->chunk(0)->GetScalar(i).ValueOrDie()->ToString());
+
+      for (int c = 0; c < other.table->num_columns(); c++)
+        row.push_back("null");
+
+      rows.push_back(row);
+    }
   }
 
-  // build result as strings (simple but works)
   std::vector<std::shared_ptr<arrow::Array>> arrays;
-
   int total_cols = table->num_columns() + other.table->num_columns();
 
   for (int c = 0; c < total_cols; c++) {
@@ -447,7 +442,6 @@ EagerDataFrame EagerDataFrame::join(const EagerDataFrame& other,
   }
 
   std::vector<std::shared_ptr<arrow::Field>> fields;
-
   for (int c = 0; c < total_cols; c++)
     fields.push_back(arrow::field("col" + std::to_string(c), arrow::utf8()));
 

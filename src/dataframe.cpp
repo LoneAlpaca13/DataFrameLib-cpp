@@ -66,7 +66,12 @@ EagerDataFrame EagerDataFrame::select(
               std::dynamic_pointer_cast<arrow::Int64Scalar>(v)->value);
       }
       builder.Finish(&arr);
-      fields.push_back(arrow::field("col" + std::to_string(i), arrow::int64()));
+      auto alias_expr = std::dynamic_pointer_cast<AliasExpr>(exprs[i]);
+
+      std::string name =
+          alias_expr ? alias_expr->getAlias() : "col" + std::to_string(i);
+
+      fields.push_back(arrow::field(name, arr->type()));
     }
 
     // ===== BOOL =====
@@ -259,18 +264,30 @@ EagerDataFrame EagerDataFrame::sort(const std::string& column_name,
   for (int j = 0; j < table->num_columns(); j++) {
     auto c = table->column(j)->chunk(0);
 
-    arrow::StringBuilder builder;
-
-    for (int i : indices) {
-      auto v = c->GetScalar(i).ValueOrDie();
-      if (!v->is_valid)
-        builder.AppendNull();
-      else
-        builder.Append(v->ToString());
-    }
-
     std::shared_ptr<arrow::Array> arr;
-    builder.Finish(&arr);
+
+    if (c->type_id() == arrow::Type::INT64) {
+      arrow::Int64Builder builder;
+      for (int i : indices) {
+        auto v = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+            c->GetScalar(i).ValueOrDie());
+        if (!v->is_valid)
+          builder.AppendNull();
+        else
+          builder.Append(v->value);
+      }
+      builder.Finish(&arr);
+    } else {
+      arrow::StringBuilder builder;
+      for (int i : indices) {
+        auto v = c->GetScalar(i).ValueOrDie();
+        if (!v->is_valid)
+          builder.AppendNull();
+        else
+          builder.Append(v->ToString());
+      }
+      builder.Finish(&arr);
+    }
 
     new_cols.push_back(std::make_shared<arrow::ChunkedArray>(arr));
   }

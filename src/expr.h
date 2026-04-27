@@ -20,6 +20,28 @@ class Expr {
       const std::shared_ptr<arrow::Table>& table) const = 0;
 };
 
+class AliasExpr : public Expr {
+ private:
+  std::shared_ptr<Expr> child;
+  std::string alias;
+
+ public:
+  AliasExpr(std::shared_ptr<Expr> c, const std::string& name)
+      : child(c), alias(name) {}
+
+  std::vector<std::shared_ptr<arrow::Scalar>> evaluate(
+      const std::shared_ptr<arrow::Table>& table) const override {
+    return child->evaluate(table);
+  }
+
+  const std::string& getAlias() const { return alias; }
+};
+
+inline std::shared_ptr<Expr> alias(std::shared_ptr<Expr> e,
+                                   const std::string& name) {
+  return std::make_shared<AliasExpr>(e, name);
+}
+
 // ================= COLUMN =================
 class ColumnExpr : public Expr {
  private:
@@ -188,7 +210,35 @@ class BinaryExpr : public Expr {
         }
         continue;
       }
+      // ===== DOUBLE =====
+      if (auto lf = std::dynamic_pointer_cast<arrow::DoubleScalar>(l)) {
+        auto rf = std::dynamic_pointer_cast<arrow::DoubleScalar>(r);
+        if (!rf) throw std::runtime_error("Type mismatch");
 
+        double a = lf->value;
+        double b = rf->value;
+
+        switch (op) {
+          case OpType::ADD:
+            result.push_back(std::make_shared<arrow::DoubleScalar>(a + b));
+            break;
+          case OpType::SUB:
+            result.push_back(std::make_shared<arrow::DoubleScalar>(a - b));
+            break;
+          case OpType::MUL:
+            result.push_back(std::make_shared<arrow::DoubleScalar>(a * b));
+            break;
+          case OpType::DIV:
+            result.push_back(
+                b == 0 ? make_null()
+                       : std::make_shared<arrow::DoubleScalar>(a / b));
+            break;
+          default:
+            throw std::runtime_error("Invalid double op");
+        }
+
+        continue;
+      }
       // ===== BOOL =====
       if (auto lb = std::dynamic_pointer_cast<arrow::BooleanScalar>(l)) {
         auto rb = std::dynamic_pointer_cast<arrow::BooleanScalar>(r);
@@ -321,6 +371,43 @@ inline std::shared_ptr<Expr> col(const std::string& name) {
 
 inline std::shared_ptr<Expr> lit(int64_t v) {
   return std::make_shared<LiteralExpr>(std::make_shared<arrow::Int64Scalar>(v));
+}
+
+inline std::pair<std::string, std::string> sum(const std::string& col) {
+  return {col, "sum"};
+}
+
+inline std::pair<std::string, std::string> mean(const std::string& col) {
+  return {col, "mean"};
+}
+
+inline std::pair<std::string, std::string> count(const std::string& col) {
+  return {col, "count"};
+}
+
+inline std::pair<std::string, std::string> min(const std::string& col) {
+  return {col, "min"};
+}
+
+inline std::pair<std::string, std::string> max(const std::string& col) {
+  return {col, "max"};
+}
+
+inline std::shared_ptr<Expr> is_null(std::shared_ptr<Expr> a) {
+  return std::make_shared<UnaryExpr>(a, OpType::IS_NULL);
+}
+
+inline std::shared_ptr<Expr> is_not_null(std::shared_ptr<Expr> a) {
+  return std::make_shared<UnaryExpr>(a, OpType::IS_NOT_NULL);
+}
+
+inline std::shared_ptr<Expr> operator%(std::shared_ptr<Expr> a,
+                                       std::shared_ptr<Expr> b) {
+  return std::make_shared<BinaryExpr>(a, b, OpType::MOD);
+}
+
+inline std::shared_ptr<Expr> abs(std::shared_ptr<Expr> a) {
+  return std::make_shared<UnaryExpr>(a, OpType::ABS);
 }
 
 // ================= OPERATORS =================
