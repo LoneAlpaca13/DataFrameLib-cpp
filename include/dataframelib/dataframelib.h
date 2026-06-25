@@ -1,5 +1,12 @@
 #pragma once
-
+// Compatibility macro for older Arrow test code
+#ifndef ARROW_THROW_NOT_OK
+#define ARROW_THROW_NOT_OK(expr)                             \
+  do {                                                       \
+    auto _st = (expr);                                       \
+    if (!_st.ok()) throw std::runtime_error(_st.ToString()); \
+  } while (0)
+#endif
 #include <arrow/api.h>
 
 #include <memory>
@@ -7,39 +14,21 @@
 #include <unordered_map>
 #include <vector>
 
-// Core classes
 #include "dataframe.h"
 #include "expr.h"
 #include "lazy.h"
 
 namespace dataframelib {
 
-// =====================
-// I/O FUNCTIONS
-// =====================
-
+// ========================= I/O =========================
 EagerDataFrame read_csv(const std::string& path);
 EagerDataFrame read_parquet(const std::string& path);
-
 LazyDataFrame scan_csv(const std::string& path);
 LazyDataFrame scan_parquet(const std::string& path);
 
-// =====================
-// OUTPUT (EAGER + LAZY)
-// =====================
-
-// Eager
-// (methods inside class, just listed here for clarity)
-
-// Lazy sink
-void sink_csv(const LazyDataFrame& df, const std::string& path);
-void sink_parquet(const LazyDataFrame& df, const std::string& path);
-
-// =====================
-// BUILD FROM COLUMNS
-// =====================
-
+// ========================= FROM COLUMNS =========================
 EagerDataFrame from_columns(
-    const std::unordered_map<std::string, std::shared_ptr<arrow::Array>>& cols);
+    const std::vector<std::pair<std::string, std::shared_ptr<arrow::Array>>>&
+        cols);
 
 }  // namespace dataframelib
